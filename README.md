@@ -7,4 +7,4 @@ movie preferences to create a feature vector used for inferring
 movie recommendations from our GNN trained on user movie ratings. 
 
 
-BETA VERSION: we only have the parser done... actual reccomendations coming soon :)
+BETA VERSION: we only have the parser done... actual recommendations coming soon :)
