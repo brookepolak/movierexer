@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Movie Recommendation Parser</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #0f0f0f 0%, #2d2d2d 50%, #4a4a4a 100%);
+            position: relative;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                linear-gradient(45deg, transparent 30%, rgba(192, 192, 192, 0.05) 50%, transparent 70%),
+                linear-gradient(-45deg, transparent 30%, rgba(255, 255, 255, 0.03) 50%, transparent 70%);
+            pointer-events: none;
+            z-index: 0;
+        }
+        
+        .logo-wrapper {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .logo-wrapper img {
+            max-width: 250px;
+            height: auto;
+            filter: drop-shadow(0 10px 30px rgba(0,0,0,0.5));
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+        
+        .input-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+        }
+        
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 100px;
+            transition: border-color 0.3s;
+        }
+        
+        textarea:focus {
+            outline: none;
+            border-color: #333;
+        }
+        
+        .example-text {
+            font-size: 14px;
+            color: #888;
+            margin-top: 8px;
+            font-style: italic;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #2c2c2c 0%, #1a1a1a 50%, #3d3d3d 100%);
+            color: white;
+            border: 1px solid rgba(192, 192, 192, 0.2);
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+            background: linear-gradient(135deg, #3d3d3d 0%, #2c2c2c 50%, #4a4a4a 100%);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #333;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .results {
+            display: none;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .result-section {
+            margin-bottom: 25px;
+        }
+        
+        .result-section h3 {
+            color: #333;
+            margin-bottom: 12px;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .result-section h3::before {
+            content: '';
+            display: inline-block;
+            width: 4px;
+            height: 20px;
+            background: linear-gradient(135deg, #2c2c2c 0%, #1a1a1a 50%, #3d3d3d 100%);
+            margin-right: 10px;
+            border-radius: 2px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        }
+        
+        .tag-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        
+        .tag {
+            background: #f0f0f0;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 14px;
+            color: #555;
+        }
+        
+        .tag.highlight {
+            background: linear-gradient(135deg, #2c2c2c 0%, #1a1a1a 50%, #3d3d3d 100%);
+            color: white;
+            border: 1px solid rgba(192, 192, 192, 0.15);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+        
+        .feature-vector {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c00;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 10px;
+            display: none;
+        }
+        
+        .error.show {
+            display: block;
+        }
+        
+        .empty-state {
+            text-align: center;
+            color: #999;
+            padding: 20px;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Logo centered above the white card -->
+        <div class="logo-wrapper">
+            <img src="{{ url_for('static', filename='movierex_logo.png') }}" alt="MovieRex Logo" onerror="this.style.display='none'">
+        </div>
+        
+        <div class="card">
+            <h1>Movie Preference Parser</h1>
+            <p class="subtitle">Tell us about your movie preferences and we'll extract the features</p>
+            
+            <form id="movieForm">
+                <div class="input-group">
+                    <label for="movieInput">What kind of movies do you like?</label>
+                    <textarea 
+                        id="movieInput" 
+                        name="input" 
+                        placeholder="E.g., I love mind-bending sci-fi movies like Coherence and Primer... My favorite director is Sean Baker..."
+                    ></textarea>
+                    <p class="example-text">Try mentioning movies, directors, genres, themes, or time periods</p>
+                </div>
+                
+                <button type="submit" id="submitBtn">Get Movie Recommendations</button>
+            </form>
+            
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Analyzing your preferences...</p>
+            </div>
+            
+            <div class="error" id="error"></div>
+        </div>
+        
+        <div class="card results" id="results">
+            <h2 style="margin-bottom: 25px; color: #333;">Extracted Features</h2>
+            
+            <div class="result-section">
+                <h3>Movies Mentioned</h3>
+                <div id="moviesContainer" class="tag-container">
+                    <p class="empty-state">No movies mentioned</p>
+                </div>
+            </div>
+            
+            <div class="result-section">
+                <h3>Directors Mentioned</h3>
+                <div id="directorsContainer" class="tag-container">
+                    <p class="empty-state">No directors mentioned</p>
+                </div>
+            </div>
+            
+            <div class="result-section">
+                <h3>Genres Detected</h3>
+                <div id="genresContainer" class="tag-container">
+                    <p class="empty-state">No genres detected</p>
+                </div>
+            </div>
+            
+            <div class="result-section">
+                <h3>Themes Detected</h3>
+                <div id="themesContainer" class="tag-container">
+                    <p class="empty-state">No themes detected</p>
+                </div>
+            </div>
+            
+            <div class="result-section">
+                <h3>Eras</h3>
+                <div id="eraContainer" class="tag-container">
+                    <p class="empty-state">No specific era detected</p>
+                </div>
+            </div>
+            
+            <div class="result-section">
+                <h3>Feature Vector (for ML models)</h3>
+                <div class="feature-vector" id="featureVector">
+                    <div id="vectorBreakdown"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const form = document.getElementById('movieForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const errorDiv = document.getElementById('error');
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            console.log('Form submitted');
+            
+            const input = document.getElementById('movieInput').value.trim();
+            console.log('Input value:', input);
+            
+            if (!input) {
+                showError('Please enter your movie preferences');
+                return;
+            }
+            
+            // Show loading state
+            submitBtn.disabled = true;
+            loading.style.display = 'block';
+            results.classList.remove('show');
+            errorDiv.classList.remove('show');
+            
+            try {
+                console.log('Sending request to /parse-movie-preferences');
+                const response = await fetch('/parse-movie-preferences', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ input: input })
+                });
+                
+                console.log('Response status:', response.status);
+                const data = await response.json();
+                console.log('Response data:', data);
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to parse preferences');
+                }
+                
+                displayResults(data);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showError('Error: ' + error.message);
+            } finally {
+                submitBtn.disabled = false;
+                loading.style.display = 'none';
+            }
+        });
+        
+        function displayResults(data) {
+            console.log('Displaying results:', data);
+            const parsed = data.parsed;
+            
+            // Movies
+            displayTags('moviesContainer', parsed.mentioned_movies, true);
+            
+            // Directors
+            displayTags('directorsContainer', parsed.mentioned_directors, true);
+            
+            // Genres
+            displayTags('genresContainer', parsed.genres, true);
+            
+            // Themes
+            displayTags('themesContainer', parsed.themes, true);
+            
+            // Eras (now supports multiple)
+            if (parsed.eras && parsed.eras.length > 0) {
+                displayTags('eraContainer', parsed.eras, true);
+            } else {
+                document.getElementById('eraContainer').innerHTML = '<p class="empty-state">No specific era detected</p>';
+            }
+            
+            // Feature vector with breakdown
+            displayFeatureVector(data.feature_vector, data.feature_schema, parsed);
+            
+            // Show results
+            results.classList.add('show');
+            results.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        
+        function displayTags(containerId, items, highlight = false) {
+            const container = document.getElementById(containerId);
+            
+            if (!items || items.length === 0) {
+                container.innerHTML = '<p class="empty-state">None detected</p>';
+                return;
+            }
+            
+            container.innerHTML = items.map(item => 
+                `<span class="tag ${highlight ? 'highlight' : ''}">${item}</span>`
+            ).join('');
+        }
+        
+        function displayFeatureVector(vector, schema, parsed) {
+            let html = '<div style="line-height: 1.8;">';
+            let idx = 0;
+            
+            // Genres
+            html += '<div style="margin-bottom: 10px;"><strong>Genres:</strong> [';
+            html += schema.genres.map((g, i) => vector[idx++]).join(', ') + ']</div>';
+            
+            // Themes
+            html += '<div style="margin-bottom: 10px;"><strong>Themes:</strong> [';
+            html += schema.themes.map((t, i) => vector[idx++]).join(', ') + ']</div>';
+            
+            // Eras
+            html += '<div style="margin-bottom: 10px;"><strong>Eras:</strong> [';
+            html += schema.eras.map((e, i) => vector[idx++]).join(', ') + ']</div>';
+            
+            // Counts
+            html += '<div style="margin-bottom: 10px;"><strong>Movie count:</strong> ' + vector[idx++] + '</div>';
+            html += '<div><strong>Director count:</strong> ' + vector[idx++] + '</div>';
+            
+            html += '</div>';
+            html += '<div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">';
+            html += '<strong>Full vector:</strong><br>[' + vector.join(', ') + ']';
+            html += '</div>';
+            
+            document.getElementById('vectorBreakdown').innerHTML = html;
+        }
+        
+        function showError(message) {
+            console.error('Showing error:', message);
+            errorDiv.textContent = message;
+            errorDiv.classList.add('show');
+            setTimeout(() => {
+                errorDiv.classList.remove('show');
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
