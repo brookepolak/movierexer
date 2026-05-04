@@ -35,7 +35,7 @@ client = OpenAI(
 # Define your feature schema
 FEATURE_SCHEMA = {
     "genres": ["thriller", "sci-fi", "drama", "horror", "comedy", "action", "romance"],
-    "eras": ["1960s", "1970s", "1980s", "1990s", "2000s", "2010s", "2020s"],
+    "eras": ["1920s","1930s","1940s","1950s","1960s", "1970s", "1980s", "1990s", "2000s", "2010s", "2020s"],
     "themes": ["psychological", "mind-bending", "indie", "cerebral", "experimental"]
 }
 
@@ -60,7 +60,7 @@ def parse_preferences():
                 "content": """You are a movie preference parser. Extract structured information from user input.
                 Return ONLY a JSON object with these fields:
                 - mentioned_movies: array of movie titles
-                - mentioned_directors: array of director names
+                - mentioned_directors: array of director names, and also directors of any movies listed
                 - genres: array of genres from this list: thriller, sci-fi, drama, horror, comedy, action, romance
                 - themes: array of themes from this list: psychological, mind-bending, indie, cerebral, experimental
                 - eras: array of decades like ["2010s", "2020s"] from this list: 1960s, 1970s, 1980s, 1990s, 2000s, 2010s, 2020s. Can be empty, one, or multiple decades.

@@ -250,7 +250,7 @@
         </div>
         
         <div class="card">
-            <h1>Movie Preference Parser</h1>
+            <h1>MovieRexer</h1>
             <p class="subtitle">Tell us about your movie preferences and we'll extract the features</p>
             
             <form id="movieForm">
@@ -314,7 +314,7 @@
             </div>
             
             <div class="result-section">
-                <h3>Feature Vector (for ML models)</h3>
+                <h3>Feature Vectors (for ML models)</h3>
                 <div class="feature-vector" id="featureVector">
                     <div id="vectorBreakdown"></div>
                 </div>
@@ -439,11 +439,6 @@
             // Counts
             html += '<div style="margin-bottom: 10px;"><strong>Movie count:</strong> ' + vector[idx++] + '</div>';
             html += '<div><strong>Director count:</strong> ' + vector[idx++] + '</div>';
-            
-            html += '</div>';
-            html += '<div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">';
-            html += '<strong>Full vector:</strong><br>[' + vector.join(', ') + ']';
-            html += '</div>';
             
             document.getElementById('vectorBreakdown').innerHTML = html;
         }
