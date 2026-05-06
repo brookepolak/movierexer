@@ -1,5 +1,7 @@
 # MovieRexer: get official MovieRex-ommendations
 
+Available [here!](https://movierexer.onrender.com/) 
+
 ![Alt text](static/movierex_logo.png)
 
 Powered by groq and using the llama open-source LLM, we parse your
