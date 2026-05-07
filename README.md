@@ -2,7 +2,7 @@
 
 Available [here!](https://movierexer.onrender.com/) 
 
-![Alt text](static/movierex_logo.png)
+<img src="static/movierex_logo.png" alt="movierex logo" width="25%">
 
 Powered by groq and using the llama open-source LLM, we parse your
 movie preferences to create a feature vector used for inferring
