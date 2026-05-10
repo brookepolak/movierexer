@@ -1,456 +1,588 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Movie Recommendation Parser</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #0f0f0f 0%, #2d2d2d 50%, #4a4a4a 100%);
-            position: relative;
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        body::before {
-            content: '';
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: 
-                linear-gradient(45deg, transparent 30%, rgba(192, 192, 192, 0.05) 50%, transparent 70%),
-                linear-gradient(-45deg, transparent 30%, rgba(255, 255, 255, 0.03) 50%, transparent 70%);
-            pointer-events: none;
-            z-index: 0;
-        }
-        
-        .logo-wrapper {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        
-        .logo-wrapper img {
-            max-width: 250px;
-            height: auto;
-            filter: drop-shadow(0 10px 30px rgba(0,0,0,0.5));
-        }
-        
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            position: relative;
-            z-index: 1;
-        }
-        
-        .card {
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            padding: 40px;
-            margin-bottom: 20px;
-        }
-        
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 32px;
-        }
-        
-        .subtitle {
-            color: #666;
-            margin-bottom: 30px;
-            font-size: 16px;
-        }
-        
-        .input-group {
-            margin-bottom: 20px;
-        }
-        
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 600;
-        }
-        
-        textarea {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 16px;
-            font-family: inherit;
-            resize: vertical;
-            min-height: 100px;
-            transition: border-color 0.3s;
-        }
-        
-        textarea:focus {
-            outline: none;
-            border-color: #333;
-        }
-        
-        .example-text {
-            font-size: 14px;
-            color: #888;
-            margin-top: 8px;
-            font-style: italic;
-        }
-        
-        button {
-            background: linear-gradient(135deg, #2c2c2c 0%, #1a1a1a 50%, #3d3d3d 100%);
-            color: white;
-            border: 1px solid rgba(192, 192, 192, 0.2);
-            padding: 14px 32px;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-            width: 100%;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-        }
-        
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-            background: linear-gradient(135deg, #3d3d3d 0%, #2c2c2c 50%, #4a4a4a 100%);
-        }
-        
-        button:active {
-            transform: translateY(0);
-        }
-        
-        button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-        
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 20px;
-        }
-        
-        .spinner {
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #333;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 10px;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
-        .results {
-            display: none;
-        }
-        
-        .results.show {
-            display: block;
-        }
-        
-        .result-section {
-            margin-bottom: 25px;
-        }
-        
-        .result-section h3 {
-            color: #333;
-            margin-bottom: 12px;
-            font-size: 20px;
-            display: flex;
-            align-items: center;
-        }
-        
-        .result-section h3::before {
-            content: '';
-            display: inline-block;
-            width: 4px;
-            height: 20px;
-            background: linear-gradient(135deg, #2c2c2c 0%, #1a1a1a 50%, #3d3d3d 100%);
-            margin-right: 10px;
-            border-radius: 2px;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-        }
-        
-        .tag-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 8px;
-        }
-        
-        .tag {
-            background: #f0f0f0;
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-size: 14px;
-            color: #555;
-        }
-        
-        .tag.highlight {
-            background: linear-gradient(135deg, #2c2c2c 0%, #1a1a1a 50%, #3d3d3d 100%);
-            color: white;
-            border: 1px solid rgba(192, 192, 192, 0.15);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-        }
-        
-        .feature-vector {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            font-family: 'Courier New', monospace;
-            font-size: 13px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-        
-        .error {
-            background: #fee;
-            border: 1px solid #fcc;
-            color: #c00;
-            padding: 12px;
-            border-radius: 8px;
-            margin-top: 10px;
-            display: none;
-        }
-        
-        .error.show {
-            display: block;
-        }
-        
-        .empty-state {
-            text-align: center;
-            color: #999;
-            padding: 20px;
-            font-style: italic;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MovieRexer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:       #080810;
+      --surface:  #111120;
+      --border:   #1e1e35;
+      --gold:     #e8b84b;
+      --gold-dim: #7a5f1e;
+      --text:     #d4d4e8;
+      --muted:    #5a5a7a;
+      --red:      #c0392b;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      min-height: 100vh;
+      padding: 3rem 1.5rem;
+    }
+
+    /* grain overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.4;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(3rem, 8vw, 5.5rem);
+      letter-spacing: 0.06em;
+      color: var(--gold);
+      line-height: 1;
+      margin-bottom: 0.2rem;
+    }
+
+    .subtitle {
+      font-size: 0.85rem;
+      color: var(--muted);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 2.5rem;
+    }
+
+    textarea {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 1rem;
+      line-height: 1.6;
+      padding: 1rem 1.2rem;
+      resize: vertical;
+      min-height: 110px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    textarea:focus { border-color: var(--gold-dim); }
+    textarea::placeholder { color: var(--muted); }
+
+    .btn {
+      margin-top: 1rem;
+      padding: 0.75rem 2.2rem;
+      background: var(--gold);
+      color: #000;
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.1rem;
+      letter-spacing: 0.1em;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.15s;
+    }
+    .btn:hover  { opacity: 0.88; }
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── RECS GRID ──────────────────────────────────────────────────────────── */
+
+    #recs-section {
+      margin-top: 2.5rem;
+      display: none;
+    }
+
+    .recs-header {
+      display: flex;
+      align-items: baseline;
+      gap: 1rem;
+      margin-bottom: 1.2rem;
+    }
+
+    .recs-header h2 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.8rem;
+      letter-spacing: 0.08em;
+      color: var(--gold);
+    }
+
+    .recs-header span {
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .loading-bar {
+      width: 100%;
+      height: 2px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 1.5rem;
+    }
+    .loading-bar-inner {
+      height: 100%;
+      width: 0%;
+      background: var(--gold);
+      border-radius: 2px;
+      transition: width 0.4s ease;
+      animation: loading-pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes loading-pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.5; }
+    }
+
+    .poster-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 1rem;
+    }
+
+    .poster-card {
+      position: relative;
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      aspect-ratio: 2/3;
+      cursor: pointer;
+      text-decoration: none;
+      display: block;
+      transition: transform 0.2s, border-color 0.2s;
+      animation: fadeUp 0.4s ease both;
+    }
+    .poster-card:hover {
+      transform: translateY(-4px) scale(1.02);
+      border-color: var(--gold-dim);
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .poster-card img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .poster-fallback {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 0.75rem;
+      gap: 0.5rem;
+      text-align: center;
+    }
+    .poster-fallback .icon {
+      font-size: 2rem;
+      opacity: 0.3;
+    }
+    .poster-fallback .ftitle {
+      font-size: 0.7rem;
+      color: var(--muted);
+      line-height: 1.3;
+    }
+
+    .poster-overlay {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to top, rgba(0,0,0,0.92) 0%, transparent 50%);
+      opacity: 0;
+      transition: opacity 0.2s;
+      display: flex;
+      align-items: flex-end;
+      padding: 0.6rem;
+    }
+    .poster-card:hover .poster-overlay { opacity: 1; }
+
+    .poster-overlay-title {
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: #fff;
+      line-height: 1.3;
+    }
+
+    .rt-badge {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      background: var(--red);
+      color: #fff;
+      font-size: 0.55rem;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      padding: 2px 5px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .poster-card:hover .rt-badge { opacity: 1; }
+
+    .no-recs {
+      color: var(--muted);
+      font-size: 0.9rem;
+      font-style: italic;
+      padding: 1rem 0;
+    }
+
+    /* ── FEATURES SECTION ───────────────────────────────────────────────────── */
+
+    #features-section {
+      margin-top: 2.5rem;
+      display: none;
+    }
+
+    #features-section h2 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.8rem;
+      letter-spacing: 0.08em;
+      color: var(--gold);
+      margin-bottom: 1rem;
+    }
+
+    .tag-group { margin-bottom: 1rem; }
+    .tag-group label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 0.4rem;
+    }
+    .tags { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .tag {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 0.3rem 0.65rem;
+      font-size: 0.78rem;
+      color: var(--text);
+    }
+    .tag.active {
+      background: var(--gold-dim);
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+
+    .error-msg {
+      color: #e74c3c;
+      font-size: 0.85rem;
+      margin-top: 0.75rem;
+    }
+
+    /* ── PAGINATION ─────────────────────────────────────────────────────────── */
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+    .page-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--gold);
+      font-family: "Bebas Neue", sans-serif;
+      font-size: 1.2rem;
+      letter-spacing: 0.08em;
+      padding: 0.4rem 1.1rem;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .page-btn:hover:not(:disabled) {
+      background: var(--border);
+      border-color: var(--gold-dim);
+    }
+    .page-btn:disabled {
+      opacity: 0.25;
+      cursor: not-allowed;
+    }
+    .page-indicator {
+      font-size: 0.78rem;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      min-width: 80px;
+      text-align: center;
+    }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Logo centered above the white card -->
-        <div class="logo-wrapper">
-            <img src="{{ url_for('static', filename='movierex_logo.png') }}" alt="MovieRex Logo" onerror="this.style.display='none'">
+<div class="wrap">
+              <div class="logo-wrapper">
+            <img src="{{ url_for('static', filename='movierex_logo.png') }}" alt="MovieRex Logo" onerror="this.style.display='none'" width=25%>
         </div>
-        
-        <div class="card">
-            <h1>MovieRexer</h1>
-            <p class="subtitle">Tell us about your movie preferences and we'll extract the features</p>
-            
-            <form id="movieForm">
-                <div class="input-group">
-                    <label for="movieInput">What kind of movies do you like?</label>
-                    <textarea 
-                        id="movieInput" 
-                        name="input" 
-                        placeholder="E.g., I love mind-bending sci-fi movies like Coherence and Primer... My favorite director is Sean Baker..."
-                    ></textarea>
-                    <p class="example-text">Try mentioning movies, directors, genres, themes, or time periods</p>
-                </div>
-                
-                <button type="submit" id="submitBtn">Get Movie Recommendations</button>
-            </form>
-            
-            <div class="loading" id="loading">
-                <div class="spinner"></div>
-                <p>Analyzing your preferences...</p>
-            </div>
-            
-            <div class="error" id="error"></div>
-        </div>
-        
-        <div class="card results" id="results">
-            <h2 style="margin-bottom: 25px; color: #333;">Extracted Features</h2>
-            
-            <div class="result-section">
-                <h3>Movies Mentioned</h3>
-                <div id="moviesContainer" class="tag-container">
-                    <p class="empty-state">No movies mentioned</p>
-                </div>
-            </div>
-            
-            <div class="result-section">
-                <h3>Directors Mentioned</h3>
-                <div id="directorsContainer" class="tag-container">
-                    <p class="empty-state">No directors mentioned</p>
-                </div>
-            </div>
-            
-            <div class="result-section">
-                <h3>Genres Detected</h3>
-                <div id="genresContainer" class="tag-container">
-                    <p class="empty-state">No genres detected</p>
-                </div>
-            </div>
-            
-            <div class="result-section">
-                <h3>Themes Detected</h3>
-                <div id="themesContainer" class="tag-container">
-                    <p class="empty-state">No themes detected</p>
-                </div>
-            </div>
-            
-            <div class="result-section">
-                <h3>Eras</h3>
-                <div id="eraContainer" class="tag-container">
-                    <p class="empty-state">No specific era detected</p>
-                </div>
-            </div>
-            
-            <div class="result-section">
-                <h3>Feature Vectors (for ML models)</h3>
-                <div class="feature-vector" id="featureVector">
-                    <div id="vectorBreakdown"></div>
-                </div>
-            </div>
-        </div>
+  <h1>MovieRexer</h1>
+  <p class="subtitle">Reddit-powered recommendations</p>
+
+  <textarea id="user-input" placeholder="Tell me what movies you like."></textarea>
+
+  <br>
+  <button class="btn" id="submit-btn" onclick="getRecs()">Get Recs</button>
+  <div class="error-msg" id="error-msg"></div>
+
+  <!-- ── RECOMMENDATIONS GRID ──────────────────────────────────────────── -->
+  <div id="recs-section">
+    <div class="recs-header">
+      <h2>Reddit Picks</h2>
+      <span id="recs-source"></span>
     </div>
-    
-    <script>
-        const form = document.getElementById('movieForm');
-        const submitBtn = document.getElementById('submitBtn');
-        const loading = document.getElementById('loading');
-        const results = document.getElementById('results');
-        const errorDiv = document.getElementById('error');
-        
-        form.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            console.log('Form submitted');
-            
-            const input = document.getElementById('movieInput').value.trim();
-            console.log('Input value:', input);
-            
-            if (!input) {
-                showError('Please enter your movie preferences');
-                return;
-            }
-            
-            // Show loading state
-            submitBtn.disabled = true;
-            loading.style.display = 'block';
-            results.classList.remove('show');
-            errorDiv.classList.remove('show');
-            
-            try {
-                console.log('Sending request to /parse-movie-preferences');
-                const response = await fetch('/parse-movie-preferences', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ input: input })
-                });
-                
-                console.log('Response status:', response.status);
-                const data = await response.json();
-                console.log('Response data:', data);
-                
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to parse preferences');
-                }
-                
-                displayResults(data);
-                
-            } catch (error) {
-                console.error('Error:', error);
-                showError('Error: ' + error.message);
-            } finally {
-                submitBtn.disabled = false;
-                loading.style.display = 'none';
-            }
-        });
-        
-        function displayResults(data) {
-            console.log('Displaying results:', data);
-            const parsed = data.parsed;
-            
-            // Movies
-            displayTags('moviesContainer', parsed.mentioned_movies, true);
-            
-            // Directors
-            displayTags('directorsContainer', parsed.mentioned_directors, true);
-            
-            // Genres
-            displayTags('genresContainer', parsed.genres, true);
-            
-            // Themes
-            displayTags('themesContainer', parsed.themes, true);
-            
-            // Eras (now supports multiple)
-            if (parsed.eras && parsed.eras.length > 0) {
-                displayTags('eraContainer', parsed.eras, true);
-            } else {
-                document.getElementById('eraContainer').innerHTML = '<p class="empty-state">No specific era detected</p>';
-            }
-            
-            // Feature vector with breakdown
-            displayFeatureVector(data.feature_vector, data.feature_schema, parsed);
-            
-            // Show results
-            results.classList.add('show');
-            results.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-        
-        function displayTags(containerId, items, highlight = false) {
-            const container = document.getElementById(containerId);
-            
-            if (!items || items.length === 0) {
-                container.innerHTML = '<p class="empty-state">None detected</p>';
-                return;
-            }
-            
-            container.innerHTML = items.map(item => 
-                `<span class="tag ${highlight ? 'highlight' : ''}">${item}</span>`
-            ).join('');
-        }
-        
-        function displayFeatureVector(vector, schema, parsed) {
-            let html = '<div style="line-height: 1.8;">';
-            let idx = 0;
-            
-            // Genres
-            html += '<div style="margin-bottom: 10px;"><strong>Genres:</strong> [';
-            html += schema.genres.map((g, i) => vector[idx++]).join(', ') + ']</div>';
-            
-            // Themes
-            html += '<div style="margin-bottom: 10px;"><strong>Themes:</strong> [';
-            html += schema.themes.map((t, i) => vector[idx++]).join(', ') + ']</div>';
-            
-            // Eras
-            html += '<div style="margin-bottom: 10px;"><strong>Eras:</strong> [';
-            html += schema.eras.map((e, i) => vector[idx++]).join(', ') + ']</div>';
-            
-            // Counts
-            html += '<div style="margin-bottom: 10px;"><strong>Movie count:</strong> ' + vector[idx++] + '</div>';
-            html += '<div><strong>Director count:</strong> ' + vector[idx++] + '</div>';
-            
-            document.getElementById('vectorBreakdown').innerHTML = html;
-        }
-        
-        function showError(message) {
-            console.error('Showing error:', message);
-            errorDiv.textContent = message;
-            errorDiv.classList.add('show');
-            setTimeout(() => {
-                errorDiv.classList.remove('show');
-            }, 5000);
-        }
-    </script>
+    <div class="loading-bar" id="loading-bar" style="display:none">
+      <div class="loading-bar-inner" id="loading-bar-inner"></div>
+    </div>
+    <div class="poster-grid" id="poster-grid"></div>
+    <div class="pagination" id="pagination" style="display:none">
+      <button class="page-btn" id="prev-btn" onclick="changePage(-1)" disabled>&lsaquo; Prev</button>
+      <span class="page-indicator" id="page-indicator">1 / 10</span>
+      <button class="page-btn" id="next-btn" onclick="changePage(1)">Next &rsaquo;</button>
+    </div>
+  </div>
+
+  <!-- ── EXTRACTED FEATURES ────────────────────────────────────────────── -->
+  <div id="features-section">
+    <h2>Extracted Features</h2>
+    <div class="tag-group">
+      <label>Movies Mentioned</label>
+      <div class="tags" id="tags-movies"></div>
+    </div>
+    <div class="tag-group">
+      <label>Directors</label>
+      <div class="tags" id="tags-directors"></div>
+    </div>
+    <div class="tag-group">
+      <label>Genres</label>
+      <div class="tags" id="tags-genres"></div>
+    </div>
+    <div class="tag-group">
+      <label>Themes</label>
+      <div class="tags" id="tags-themes"></div>
+    </div>
+    <div class="tag-group">
+      <label>Eras</label>
+      <div class="tags" id="tags-eras"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const PAGE_SIZE = 12;
+  let allRecs     = [];
+  let currentPage = 0;
+
+  function changePage(dir) {
+    const totalPages = Math.ceil(allRecs.length / PAGE_SIZE);
+    currentPage = Math.max(0, Math.min(currentPage + dir, totalPages - 1));
+    renderPage();
+  }
+
+  function renderPage() {
+    const totalPages = Math.ceil(allRecs.length / PAGE_SIZE);
+    const start      = currentPage * PAGE_SIZE;
+    const slice      = allRecs.slice(start, start + PAGE_SIZE);
+    renderPosters(slice);
+
+    document.getElementById('page-indicator').textContent = (currentPage + 1) + ' / ' + totalPages;
+    document.getElementById('prev-btn').disabled = currentPage === 0;
+    document.getElementById('next-btn').disabled = currentPage >= totalPages - 1;
+
+    const pagination = document.getElementById('pagination');
+    pagination.style.display = totalPages > 1 ? 'flex' : 'none';
+
+    // Scroll back to recs section
+    document.getElementById('recs-section').scrollIntoView({behavior: 'smooth', block: 'start'});
+  }
+
+  async function getRecs() {
+    const input = document.getElementById('user-input').value.trim();
+    if (!input) return;
+
+    const btn     = document.getElementById('submit-btn');
+    const errMsg  = document.getElementById('error-msg');
+    btn.disabled  = true;
+    btn.textContent = 'Thinking…';
+    errMsg.textContent = '';
+
+    // ── Step 1: parse preferences ─────────────────────────────────────────
+    let parsed;
+    try {
+      const res  = await fetch('/parse-movie-preferences', {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({input})
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      parsed = data.parsed;
+      renderFeatures(parsed);
+    } catch (e) {
+      errMsg.textContent = 'Error parsing preferences: ' + e.message;
+      btn.disabled = false;
+      btn.textContent = 'Get Recs';
+      return;
+    }
+
+    // ── Step 2: get Reddit recommendations ────────────────────────────────
+    const mentioned = parsed.mentioned_movies || [];
+    const recsSection = document.getElementById('recs-section');
+    recsSection.style.display = 'block';
+
+    if (mentioned.length === 0) {
+      document.getElementById('poster-grid').innerHTML =
+        '<p class="no-recs">Mention a specific movie to get Reddit-powered recommendations.</p>';
+      document.getElementById('recs-source').textContent = '';
+      document.getElementById('pagination').style.display = 'none';
+      allRecs = []; currentPage = 0;
+      btn.disabled = false;
+      btn.textContent = 'Get Recs';
+      return;
+    }
+
+    // Show loading bar
+    const loadingBar = document.getElementById('loading-bar');
+    const loadingInner = document.getElementById('loading-bar-inner');
+    loadingBar.style.display = 'block';
+    loadingInner.style.width = '15%';
+
+    document.getElementById('recs-source').textContent =
+      'based on r/MovieRecommendations + r/MovieSuggestions';
+    document.getElementById('poster-grid').innerHTML = '';
+
+    btn.textContent = 'Searching Reddit…';
+
+    // Animate loading bar while waiting
+    let pct = 15;
+    const barInterval = setInterval(() => {
+      pct = Math.min(pct + 3, 85);
+      loadingInner.style.width = pct + '%';
+    }, 600);
+
+    try {
+      const res  = await fetch('/get-recs', {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({mentioned_movies: mentioned, genres: parsed.genres || []})
+      });
+      const data = await res.json();
+
+      clearInterval(barInterval);
+      loadingInner.style.width = '100%';
+      setTimeout(() => { loadingBar.style.display = 'none'; }, 400);
+
+      if (!data.success) throw new Error(data.error);
+      allRecs     = data.recommendations || [];
+      currentPage = 0;
+      renderPage();
+
+    } catch (e) {
+      clearInterval(barInterval);
+      loadingBar.style.display = 'none';
+      errMsg.textContent = 'Error fetching recs: ' + e.message;
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Get Recs';
+  }
+
+  function renderPosters(recs) {
+    const grid = document.getElementById('poster-grid');
+    grid.innerHTML = '';
+
+    if (!recs || recs.length === 0) {
+      grid.innerHTML = '<p class="no-recs">No recommendations found on Reddit for these movies.</p>';
+      return;
+    }
+
+    recs.forEach((movie, i) => {
+      const a = document.createElement('a');
+      a.className  = 'poster-card';
+      a.href       = movie.rt_url;
+      a.target     = '_blank';
+      a.rel        = 'noopener';
+      a.style.animationDelay = (i * 60) + 'ms';
+
+      if (movie.poster_url) {
+        const img    = document.createElement('img');
+        img.src      = movie.poster_url;
+        img.alt      = movie.title;
+        img.loading  = 'lazy';
+        img.onerror  = () => { img.replaceWith(makeFallback(movie.title)); };
+        a.appendChild(img);
+      } else {
+        a.appendChild(makeFallback(movie.title));
+      }
+
+      // Hover overlay
+      const overlay = document.createElement('div');
+      overlay.className = 'poster-overlay';
+      overlay.innerHTML = '<span class="poster-overlay-title">' + escHtml(movie.title) + '</span>';
+      a.appendChild(overlay);
+
+      // RT badge
+      const badge = document.createElement('div');
+      badge.className   = 'rt-badge';
+      badge.textContent = 'RT';
+      a.appendChild(badge);
+
+      grid.appendChild(a);
+    });
+  }
+
+  function makeFallback(title) {
+    const div = document.createElement('div');
+    div.className = 'poster-fallback';
+    div.innerHTML = '<div class="icon">🎬</div><div class="ftitle">' + escHtml(title) + '</div>';
+    return div;
+  }
+
+  function renderFeatures(parsed) {
+    document.getElementById('features-section').style.display = 'block';
+
+    renderTags('tags-movies',    parsed.mentioned_movies    || [], true);
+    renderTags('tags-directors', parsed.mentioned_directors || [], true);
+    renderTags('tags-genres',    parsed.genres              || [], true);
+    renderTags('tags-themes',    parsed.themes              || [], true);
+    renderTags('tags-eras',      parsed.eras                || [], true);
+  }
+
+  function renderTags(id, items, active) {
+    const el = document.getElementById(id);
+    el.innerHTML = items.length
+      ? items.map(t => '<span class="tag' + (active ? ' active' : '') + '">' + escHtml(t) + '</span>').join('')
+      : '<span class="tag">—</span>';
+  }
+
+  function escHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Submit on Ctrl/Cmd+Enter
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('user-input').addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') getRecs();
+    });
+  });
+</script>
 </body>
 </html>

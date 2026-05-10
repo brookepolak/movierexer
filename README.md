@@ -4,9 +4,6 @@ Available [here!](https://movierexer.onrender.com/)
 
 <img src="static/movierex_logo.png" alt="movierex logo" width="25%">
 
-Powered by groq and using the llama open-source LLM, we parse your
-movie preferences to create a feature vector used for inferring
-movie recommendations from our GNN trained on user movie ratings. 
+Powered by groq and the llama open-source LLM, we find subreddit reccomendations based on your favorite movies. 
 
-
-BETA VERSION: we only have the parser done... actual recommendations coming soon :)
+Coming soon: a more powerful recommendation engine powered by a GNN, with subreddit recs as one of the edge features.
