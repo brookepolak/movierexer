@@ -1,0 +1,12 @@
+flask==3.0.0
+flask-cors==4.0.0
+gunicorn==21.2.0
+openai==1.57.2
+requests==2.31.0
+cloudscraper==1.2.71
+beautifulsoup4==4.12.3
+numpy==1.26.3
+torch==2.2.0
+torch_geometric==2.5.0
+tqdm==4.66.2
+python-dotenv==1.0.0
