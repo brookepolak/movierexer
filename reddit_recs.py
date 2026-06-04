@@ -28,6 +28,9 @@ except ImportError:
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
+
+if not TMDB_API_KEY:
+    print("⚠️  TMDB_API_KEY not set — posters will not load. Get a free key at themoviedb.org/settings/api")
 ARCTIC_BASE  = "https://arctic-shift.photon-reddit.com/api"
 TMDB_BASE    = "https://api.themoviedb.org/3"
 TMDB_IMG     = "https://image.tmdb.org/t/p/w300"
@@ -153,8 +156,8 @@ Rules:
 
 def _tmdb_data(title):
     """
-    Search TMDB for a movie. Returns dict with poster_url and genre_ids,
-    or None if not found.
+    Search TMDB for a movie. Returns dict with poster_url, genre_ids, and
+    movie_url (TMDB page), or None if not found / no API key.
     """
     if not TMDB_API_KEY:
         return None
@@ -167,11 +170,13 @@ def _tmdb_data(title):
         results = resp.json().get("results", [])
         if not results:
             return None
-        top = results[0]
-        poster = (TMDB_IMG + top["poster_path"]) if top.get("poster_path") else None
+        top      = results[0]
+        poster   = (TMDB_IMG + top["poster_path"]) if top.get("poster_path") else None
+        movie_id = top.get("id")
         return {
             "poster_url": poster,
             "genre_ids":  top.get("genre_ids", []),
+            "movie_url":  f"https://www.themoviedb.org/movie/{movie_id}" if movie_id else None,
         }
     except Exception:
         return None
@@ -193,10 +198,23 @@ def _matches_genres(genre_ids, requested_genres):
 # ── RT URL ────────────────────────────────────────────────────────────────────
 
 def _rt_url(title):
-    slug = title.lower()
+    """Best-effort Rotten Tomatoes URL. RT drops leading articles and uses underscores."""
+    slug = title.lower().strip()
+    # drop leading articles RT commonly omits
+    for article in ("the ", "a ", "an "):
+        if slug.startswith(article):
+            slug = slug[len(article):]
+            break
     slug = re.sub(r"[^\w\s]", "", slug)
     slug = re.sub(r"\s+", "_", slug.strip())
     return "https://www.rottentomatoes.com/m/" + slug
+
+
+def _movie_url(title, tmdb):
+    """Return the best available movie link: TMDB page > RT slug."""
+    if tmdb and tmdb.get("movie_url"):
+        return tmdb["movie_url"]
+    return _rt_url(title)
 
 
 # ── ARCTIC SHIFT ──────────────────────────────────────────────────────────────
@@ -313,7 +331,7 @@ def _search_one_movie(source_title, genres, initial_seen):
                     recs[rec_title] = {
                         "title":      rec_title,
                         "poster_url": tmdb["poster_url"] if tmdb else None,
-                        "rt_url":     _rt_url(rec_title),
+                        "rt_url":     _movie_url(rec_title, tmdb),
                         "upvotes":    upvotes,
                     }
 

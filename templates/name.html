@@ -247,10 +247,10 @@
       position: absolute;
       top: 6px;
       right: 6px;
-      background: var(--red);
+      background: #01b4e4;
       color: #fff;
       font-size: 0.55rem;
-      font-weight: 500;
+      font-weight: 700;
       letter-spacing: 0.05em;
       padding: 2px 5px;
       border-radius: 3px;
@@ -502,6 +502,25 @@
     // merged pool keyed by lowercase title — filled as each movie request returns
     const pool = {};
     let completed = 0;
+    let animPct   = 5;
+
+    // Smooth bar: creep forward every 500 ms, staying up to 10 % ahead of
+    // the "earned" floor but never exceeding 88 % until everything is done.
+    const barInterval = setInterval(() => {
+      const floor  = 5 + (completed / mentioned.length) * 85;
+      const target = Math.min(floor + 10, 88);
+      if (animPct < target) {
+        animPct = Math.min(animPct + 1.5, target);
+        loadingInner.style.width = animPct.toFixed(1) + '%';
+      }
+    }, 500);
+
+    function bumpBar() {
+      // Jump to the earned floor immediately so completed movies always register
+      const floor = 5 + (completed / mentioned.length) * 85;
+      animPct = Math.max(animPct, floor);
+      loadingInner.style.width = animPct.toFixed(1) + '%';
+    }
 
     function mergeAndRender(movie, recs) {
       // Mark badge done
@@ -515,9 +534,8 @@
         else pool[key] = Object.assign({}, rec);
       }
 
-      // Advance progress bar proportionally
       completed++;
-      loadingInner.style.width = Math.round(5 + (completed / mentioned.length) * 90) + '%';
+      bumpBar();
 
       // Re-render sorted grid immediately
       allRecs     = Object.values(pool).sort((a, b) => b.upvotes - a.upvotes);
@@ -533,7 +551,7 @@
         body:    JSON.stringify({
           movie,
           genres:     parsed.genres || [],
-          all_movies: mentioned          // seed exclusion set with all source titles
+          all_movies: mentioned
         })
       })
       .then(r => r.text())
@@ -552,7 +570,7 @@
           const badge = document.getElementById('badge-' + cssId(movie));
           if (badge) { badge.classList.remove('pending'); badge.style.opacity = '0.35'; }
           completed++;
-          loadingInner.style.width = Math.round(5 + (completed / mentioned.length) * 90) + '%';
+          bumpBar();
         }
       })
       .catch(e => {
@@ -561,11 +579,12 @@
         const badge = document.getElementById('badge-' + cssId(movie));
         if (badge) { badge.classList.remove('pending'); badge.style.opacity = '0.35'; }
         completed++;
-        loadingInner.style.width = Math.round(5 + (completed / mentioned.length) * 90) + '%';
+        bumpBar();
       });
 
     await Promise.all(mentioned.map(fetchOne));
 
+    clearInterval(barInterval);
     loadingInner.style.width = '100%';
     setTimeout(() => { loadingBar.style.display = 'none'; }, 400);
 
@@ -619,7 +638,7 @@
       // RT badge
       const badge = document.createElement('div');
       badge.className   = 'rt-badge';
-      badge.textContent = 'RT';
+      badge.textContent = 'TMDB';
       a.appendChild(badge);
 
       grid.appendChild(a);
