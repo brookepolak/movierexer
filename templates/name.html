@@ -536,14 +536,28 @@
           all_movies: mentioned          // seed exclusion set with all source titles
         })
       })
-      .then(r => r.json())
+      .then(r => r.text())
+      .then(text => {
+        if (!text) throw new Error('Server returned an empty response — the search may have timed out. Try fewer movies.');
+        try { return JSON.parse(text); }
+        catch(e) { throw new Error('Bad JSON from server: ' + text.slice(0, 120)); }
+      })
       .then(data => {
-        if (data.success) mergeAndRender(data.movie, data.recs);
-        else console.warn('Rec error for', movie, data.error);
+        if (data.success) {
+          mergeAndRender(data.movie, data.recs);
+        } else {
+          const msg = data.error || 'unknown server error';
+          errMsg.textContent = 'Server error for "' + movie + '": ' + msg;
+          console.error('Rec error for', movie, msg);
+          const badge = document.getElementById('badge-' + cssId(movie));
+          if (badge) { badge.classList.remove('pending'); badge.style.opacity = '0.35'; }
+          completed++;
+          loadingInner.style.width = Math.round(5 + (completed / mentioned.length) * 90) + '%';
+        }
       })
       .catch(e => {
-        console.warn('Fetch error for', movie, e);
-        // Mark badge grey-done so it doesn't stay "pending"
+        errMsg.textContent = e.message;
+        console.error('Fetch error for', movie, e);
         const badge = document.getElementById('badge-' + cssId(movie));
         if (badge) { badge.classList.remove('pending'); badge.style.opacity = '0.35'; }
         completed++;

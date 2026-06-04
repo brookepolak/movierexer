@@ -257,11 +257,17 @@ def _extract_recs_llm(post_title, comments):
 
 # ── PER-MOVIE SEARCH ──────────────────────────────────────────────────────────
 
+MAX_POSTS_PER_SUB = 15   # posts fetched per subreddit per movie
+MAX_RECS_PER_MOVIE = 25  # stop early once we have this many unique recs
+
+
 def _search_one_movie(source_title, genres, initial_seen):
     """
     Searches both subreddits for one source movie.
     initial_seen  — set of lowercase titles to skip (source movies).
     Returns a list of rec dicts: {title, poster_url, rt_url, upvotes}.
+    Caps at MAX_POSTS_PER_SUB posts per subreddit and MAX_RECS_PER_MOVIE
+    unique results so each request completes within a reasonable time.
     """
     seen = set(initial_seen)  # local copy — no cross-thread mutation
     recs = {}
@@ -269,28 +275,33 @@ def _search_one_movie(source_title, genres, initial_seen):
     print("  Searching Reddit for: " + source_title)
 
     for subreddit in SUBREDDITS:
-        posts = _search_arctic(subreddit, source_title, limit=100)
-        print("    [" + subreddit + "] " + str(len(posts)) + " posts found for " + source_title)
-        time.sleep(0.3)
+        posts = _search_arctic(subreddit, source_title, limit=MAX_POSTS_PER_SUB)
+        print("    [" + subreddit + "] " + str(len(posts)) + " posts for " + source_title)
+        time.sleep(0.2)
 
         for post in posts:
+            if len(recs) >= MAX_RECS_PER_MOVIE:
+                break
+
             comments = _get_comments(post.get("id", ""))
-            time.sleep(0.3)
+            time.sleep(0.2)
             if not comments:
                 continue
 
             extracted = _extract_recs_llm(post.get("title", ""), comments)
 
             for rec in extracted:
+                if len(recs) >= MAX_RECS_PER_MOVIE:
+                    break
+
                 rec_title = rec.get("title", "").strip()
                 if not rec_title or rec_title.lower() in seen:
                     continue
 
                 tmdb = _tmdb_data(rec_title)
-                time.sleep(0.2)
+                time.sleep(0.15)
 
                 if tmdb and not _matches_genres(tmdb["genre_ids"], genres):
-                    print("    Skipping (wrong genre): " + rec_title)
                     continue
 
                 seen.add(rec_title.lower())
@@ -306,6 +317,10 @@ def _search_one_movie(source_title, genres, initial_seen):
                         "upvotes":    upvotes,
                     }
 
+        if len(recs) >= MAX_RECS_PER_MOVIE:
+            break
+
+    print("  Done [" + source_title + "]: " + str(len(recs)) + " recs found")
     return list(recs.values())
 
 
