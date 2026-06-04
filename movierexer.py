@@ -4,7 +4,7 @@ from openai import OpenAI
 import numpy as np
 import json
 import os
-from reddit_recs import get_recommendations, get_recommendations_streaming
+from reddit_recs import get_recommendations, get_recommendations_streaming, _search_one_movie
 
 try:
     from dotenv import load_dotenv
@@ -101,6 +101,30 @@ def get_recs():
             "success":         True,
             "recommendations": recommendations
         })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/get-recs-one', methods=['POST'])
+def get_recs_one():
+    """
+    Searches Reddit for a single movie title and returns its recommendations.
+    The frontend fires one of these per movie in parallel.
+    """
+    try:
+        data        = request.get_json()
+        movie       = data.get('movie', '').strip()
+        genres      = data.get('genres', [])
+        all_movies  = data.get('all_movies', [])   # used to seed the exclusion set
+
+        if not movie:
+            return jsonify({"success": True, "movie": movie, "recs": []})
+
+        initial_seen = set(t.lower() for t in all_movies)
+        recs         = _search_one_movie(movie, genres, initial_seen)
+
+        return jsonify({"success": True, "movie": movie, "recs": recs})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
