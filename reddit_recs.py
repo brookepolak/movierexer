@@ -14,6 +14,9 @@ import os
 import re
 import json
 import time
+import queue
+import threading
+import concurrent.futures
 import requests
 from openai import OpenAI
 
@@ -252,70 +255,105 @@ def _extract_recs_llm(post_title, comments):
         return []
 
 
-# ── MAIN ENTRY POINT ──────────────────────────────────────────────────────────
+# ── PER-MOVIE SEARCH ──────────────────────────────────────────────────────────
+
+def _search_one_movie(source_title, genres, initial_seen):
+    """
+    Searches both subreddits for one source movie.
+    initial_seen  — set of lowercase titles to skip (source movies).
+    Returns a list of rec dicts: {title, poster_url, rt_url, upvotes}.
+    """
+    seen = set(initial_seen)  # local copy — no cross-thread mutation
+    recs = {}
+
+    print("  Searching Reddit for: " + source_title)
+
+    for subreddit in SUBREDDITS:
+        posts = _search_arctic(subreddit, source_title, limit=100)
+        print("    [" + subreddit + "] " + str(len(posts)) + " posts found for " + source_title)
+        time.sleep(0.3)
+
+        for post in posts:
+            comments = _get_comments(post.get("id", ""))
+            time.sleep(0.3)
+            if not comments:
+                continue
+
+            extracted = _extract_recs_llm(post.get("title", ""), comments)
+
+            for rec in extracted:
+                rec_title = rec.get("title", "").strip()
+                if not rec_title or rec_title.lower() in seen:
+                    continue
+
+                tmdb = _tmdb_data(rec_title)
+                time.sleep(0.2)
+
+                if tmdb and not _matches_genres(tmdb["genre_ids"], genres):
+                    print("    Skipping (wrong genre): " + rec_title)
+                    continue
+
+                seen.add(rec_title.lower())
+                upvotes = rec.get("upvotes", 0)
+
+                if rec_title in recs:
+                    recs[rec_title]["upvotes"] += upvotes
+                else:
+                    recs[rec_title] = {
+                        "title":      rec_title,
+                        "poster_url": tmdb["poster_url"] if tmdb else None,
+                        "rt_url":     _rt_url(rec_title),
+                        "upvotes":    upvotes,
+                    }
+
+    return list(recs.values())
+
+
+# ── MAIN ENTRY POINTS ─────────────────────────────────────────────────────────
 
 def get_recommendations(movie_titles, genres=None, max_recs=120):
     """
-    Takes:
-      movie_titles  — list of movie title strings from the user's query
-      genres        — list of genre strings from FEATURE_SCHEMA (e.g. ["thriller", "sci-fi"])
-      max_recs      — max results to return
-
-    For each movie in movie_titles, searches both subreddits independently.
-    Filters results by genre via TMDB.
-    Returns list of { title, poster_url, rt_url, upvotes } sorted by upvotes desc.
+    Searches Reddit for every movie in parallel and returns a merged, sorted list.
     """
-    genres = genres or []
-    seen   = set(t.lower() for t in movie_titles)
-    recs   = {}
+    genres       = genres or []
+    initial_seen = set(t.lower() for t in movie_titles)
+    merged       = {}
 
-    # ── Search Reddit for EACH movie in the user's query ─────────────────────
-    for source_title in movie_titles:
-        print("  Searching Reddit for: " + source_title)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(movie_titles), 4)) as ex:
+        futures = {ex.submit(_search_one_movie, t, genres, initial_seen): t
+                   for t in movie_titles}
+        for future in concurrent.futures.as_completed(futures):
+            for rec in future.result():
+                key = rec["title"].lower()
+                if key in merged:
+                    merged[key]["upvotes"] += rec["upvotes"]
+                else:
+                    merged[key] = rec
 
-        for subreddit in SUBREDDITS:
-            posts = _search_arctic(subreddit, source_title, limit=100)
-            print("    [" + subreddit + "] " + str(len(posts)) + " posts found")
-            time.sleep(0.3)
-
-            for post in posts:
-                comments = _get_comments(post.get("id", ""))
-                time.sleep(0.3)
-                if not comments:
-                    continue
-
-                extracted = _extract_recs_llm(post.get("title", ""), comments)
-
-                for rec in extracted:
-                    rec_title = rec.get("title", "").strip()
-                    if not rec_title or rec_title.lower() in seen:
-                        continue
-
-                    # ── Genre filter via TMDB ─────────────────────────────────
-                    tmdb = _tmdb_data(rec_title)
-                    time.sleep(0.2)
-
-                    if tmdb and not _matches_genres(tmdb["genre_ids"], genres):
-                        print("    Skipping (wrong genre): " + rec_title)
-                        continue
-
-                    seen.add(rec_title.lower())
-                    upvotes = rec.get("upvotes", 0)
-
-                    if rec_title in recs:
-                        recs[rec_title]["upvotes"] += upvotes
-                    else:
-                        recs[rec_title] = {
-                            "title":      rec_title,
-                            "poster_url": tmdb["poster_url"] if tmdb else None,
-                            "rt_url":     _rt_url(rec_title),
-                            "upvotes":    upvotes,
-                        }
-
-                if len(recs) >= max_recs:
-                    break
-            if len(recs) >= max_recs:
-                break
-
-    sorted_recs = sorted(recs.values(), key=lambda x: -x["upvotes"])
+    sorted_recs = sorted(merged.values(), key=lambda x: -x["upvotes"])
     return sorted_recs[:max_recs]
+
+
+def get_recommendations_streaming(movie_titles, genres=None):
+    """
+    Generator. Searches every movie in parallel; yields (movie_title, recs_list)
+    as each search finishes — callers see results arrive one movie at a time.
+    """
+    genres       = genres or []
+    initial_seen = set(t.lower() for t in movie_titles)
+    result_queue = queue.Queue()
+
+    def _worker(title):
+        recs = _search_one_movie(title, genres, initial_seen)
+        result_queue.put((title, recs))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(movie_titles), 4)) as ex:
+        for title in movie_titles:
+            ex.submit(_worker, title)
+
+        for _ in movie_titles:
+            try:
+                title, recs = result_queue.get(timeout=300)
+                yield title, recs
+            except queue.Empty:
+                break

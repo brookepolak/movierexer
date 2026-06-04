@@ -1,10 +1,10 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 from flask_cors import CORS
 from openai import OpenAI
 import numpy as np
 import json
 import os
-from reddit_recs import get_recommendations
+from reddit_recs import get_recommendations, get_recommendations_streaming
 
 try:
     from dotenv import load_dotenv
@@ -106,6 +106,32 @@ def get_recs():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/get-recs-stream', methods=['POST'])
+def get_recs_stream():
+    """
+    SSE endpoint. Streams (movie_title, recs) pairs as each parallel search
+    finishes, so the frontend can render progressively.
+    """
+    data      = request.get_json()
+    mentioned = data.get('mentioned_movies', [])
+    genres    = data.get('genres', [])
+
+    def generate():
+        if not mentioned:
+            yield 'data: {"done":true}\n\n'
+            return
+        for movie_title, recs in get_recommendations_streaming(mentioned, genres=genres):
+            payload = json.dumps({'movie': movie_title, 'recs': recs})
+            yield 'data: ' + payload + '\n\n'
+        yield 'data: {"done":true}\n\n'
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
+
+
 def create_feature_vector(parsed_data):
     vector = []
     for genre in FEATURE_SCHEMA["genres"]:
@@ -120,4 +146,4 @@ def create_feature_vector(parsed_data):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, threaded=True)

@@ -126,6 +126,27 @@
       text-transform: uppercase;
     }
 
+    .movie-badge {
+      display: inline-block;
+      background: var(--gold-dim);
+      border: 1px solid var(--gold);
+      color: var(--gold);
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      padding: 2px 8px;
+      border-radius: 3px;
+      margin-right: 0.4rem;
+      margin-bottom: 0.4rem;
+      text-transform: uppercase;
+    }
+    .movie-badge.pending {
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--muted);
+      opacity: 0.7;
+    }
+    #movie-badges { margin-bottom: 1rem; min-height: 1.6rem; }
+
     .loading-bar {
       width: 100%;
       height: 2px;
@@ -349,6 +370,7 @@
       <h2>Reddit Picks</h2>
       <span id="recs-source"></span>
     </div>
+    <div id="movie-badges"></div>
     <div class="loading-bar" id="loading-bar" style="display:none">
       <div class="loading-bar-inner" id="loading-bar-inner"></div>
     </div>
@@ -418,9 +440,9 @@
     const input = document.getElementById('user-input').value.trim();
     if (!input) return;
 
-    const btn     = document.getElementById('submit-btn');
-    const errMsg  = document.getElementById('error-msg');
-    btn.disabled  = true;
+    const btn    = document.getElementById('submit-btn');
+    const errMsg = document.getElementById('error-msg');
+    btn.disabled = true;
     btn.textContent = 'Thinking…';
     errMsg.textContent = '';
 
@@ -443,8 +465,8 @@
       return;
     }
 
-    // ── Step 2: get Reddit recommendations ────────────────────────────────
-    const mentioned = parsed.mentioned_movies || [];
+    // ── Step 2: stream Reddit recommendations per movie ───────────────────
+    const mentioned   = parsed.mentioned_movies || [];
     const recsSection = document.getElementById('recs-section');
     recsSection.style.display = 'block';
 
@@ -452,6 +474,7 @@
       document.getElementById('poster-grid').innerHTML =
         '<p class="no-recs">Mention a specific movie to get Reddit-powered recommendations.</p>';
       document.getElementById('recs-source').textContent = '';
+      document.getElementById('movie-badges').innerHTML  = '';
       document.getElementById('pagination').style.display = 'none';
       allRecs = []; currentPage = 0;
       btn.disabled = false;
@@ -459,50 +482,96 @@
       return;
     }
 
-    // Show loading bar
-    const loadingBar = document.getElementById('loading-bar');
-    const loadingInner = document.getElementById('loading-bar-inner');
-    loadingBar.style.display = 'block';
-    loadingInner.style.width = '15%';
+    // Render pending badges — one per source movie
+    const badgesEl = document.getElementById('movie-badges');
+    badgesEl.innerHTML = mentioned.map(m =>
+      '<span class="movie-badge pending" id="badge-' + cssId(m) + '">' + escHtml(m) + '</span>'
+    ).join('');
 
     document.getElementById('recs-source').textContent =
-      'based on r/MovieRecommendations + r/MovieSuggestions';
+      'r/MovieRecommendations + r/MovieSuggestions';
     document.getElementById('poster-grid').innerHTML = '';
+
+    const loadingBar   = document.getElementById('loading-bar');
+    const loadingInner = document.getElementById('loading-bar-inner');
+    loadingBar.style.display = 'block';
+    loadingInner.style.width = '5%';
 
     btn.textContent = 'Searching Reddit…';
 
-    // Animate loading bar while waiting
-    let pct = 15;
-    const barInterval = setInterval(() => {
-      pct = Math.min(pct + 3, 85);
-      loadingInner.style.width = pct + '%';
-    }, 600);
+    // merged pool keyed by lowercase title
+    const pool = {};
+    let completed = 0;
 
     try {
-      const res  = await fetch('/get-recs', {
+      const res = await fetch('/get-recs-stream', {
         method:  'POST',
         headers: {'Content-Type': 'application/json'},
         body:    JSON.stringify({mentioned_movies: mentioned, genres: parsed.genres || []})
       });
-      const data = await res.json();
 
-      clearInterval(barInterval);
-      loadingInner.style.width = '100%';
-      setTimeout(() => { loadingBar.style.display = 'none'; }, 400);
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buffer  = '';
 
-      if (!data.success) throw new Error(data.error);
-      allRecs     = data.recommendations || [];
-      currentPage = 0;
-      renderPage();
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, {stream: true});
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete last line
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let payload;
+          try { payload = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (payload.done) break;
+
+          // Mark this movie's badge as done
+          const badge = document.getElementById('badge-' + cssId(payload.movie));
+          if (badge) badge.classList.remove('pending');
+
+          // Merge recs into pool (accumulate upvotes for duplicates)
+          for (const rec of (payload.recs || [])) {
+            const key = rec.title.toLowerCase();
+            if (pool[key]) {
+              pool[key].upvotes += rec.upvotes;
+            } else {
+              pool[key] = Object.assign({}, rec);
+            }
+          }
+
+          // Re-render sorted grid after each movie arrives
+          completed++;
+          const pct = Math.round(5 + (completed / mentioned.length) * 90);
+          loadingInner.style.width = pct + '%';
+
+          allRecs     = Object.values(pool).sort((a, b) => b.upvotes - a.upvotes);
+          currentPage = 0;
+          renderPage();
+        }
+      }
 
     } catch (e) {
-      clearInterval(barInterval);
-      loadingBar.style.display = 'none';
       errMsg.textContent = 'Error fetching recs: ' + e.message;
     }
 
+    loadingInner.style.width = '100%';
+    setTimeout(() => { loadingBar.style.display = 'none'; }, 400);
+
+    // Final sort after all streams close
+    allRecs     = Object.values(pool).sort((a, b) => b.upvotes - a.upvotes);
+    currentPage = 0;
+    renderPage();
+
     btn.disabled = false;
     btn.textContent = 'Get Recs';
+  }
+
+  function cssId(str) {
+    return str.toLowerCase().replace(/[^a-z0-9]/g, '-');
   }
 
   function renderPosters(recs) {
