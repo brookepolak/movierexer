@@ -4,7 +4,7 @@ from openai import OpenAI
 import numpy as np
 import json
 import os
-from reddit_recs import get_recommendations, get_recommendations_streaming, _search_one_movie
+from reddit_recs import get_recommendations, get_recommendations_streaming, _search_one_movie, _per_movie_budget
 
 try:
     from dotenv import load_dotenv
@@ -121,8 +121,11 @@ def get_recs_one():
         if not movie:
             return jsonify({"success": True, "movie": movie, "recs": []})
 
+        # Divide a fixed total across all requested movies so the combined
+        # result count stays constant and searches don't time out.
+        budget       = _per_movie_budget(len(all_movies) or 1)
         initial_seen = set(t.lower() for t in all_movies)
-        recs         = _search_one_movie(movie, genres, initial_seen)
+        recs         = _search_one_movie(movie, genres, initial_seen, max_recs=budget)
 
         return jsonify({"success": True, "movie": movie, "recs": recs})
 

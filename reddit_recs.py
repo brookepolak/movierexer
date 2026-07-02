@@ -220,11 +220,14 @@ def _movie_url(title, tmdb):
 # ── ARCTIC SHIFT ──────────────────────────────────────────────────────────────
 
 def _search_arctic(subreddit, title, limit=100):
+    # NOTE: Arctic Shift's `title` param does a full-text title scan across all
+    # history and times out (HTTP 422 "Timeout. Maybe slow down a bit").
+    # `query` searches title+body via the fast index and returns quickly.
     try:
         resp = requests.get(
             ARCTIC_BASE + "/posts/search",
-            params={"subreddit": subreddit, "title": title, "limit": limit, "sort": "desc"},
-            headers=HEADERS, timeout=8
+            params={"subreddit": subreddit, "query": title, "limit": limit},
+            headers=HEADERS, timeout=12
         )
         return resp.json().get("data", []) if resp.status_code == 200 else []
     except Exception:
@@ -276,21 +279,23 @@ def _extract_recs_llm(post_title, comments):
 # ── PER-MOVIE SEARCH ──────────────────────────────────────────────────────────
 
 MAX_POSTS_PER_SUB = 15   # posts fetched per subreddit per movie
-MAX_RECS_PER_MOVIE = 25  # stop early once we have this many unique recs
+MAX_RECS_PER_MOVIE = 25  # default per-movie cap when caller doesn't specify
 
 
-def _search_one_movie(source_title, genres, initial_seen):
+def _search_one_movie(source_title, genres, initial_seen, max_recs=MAX_RECS_PER_MOVIE):
     """
     Searches both subreddits for one source movie.
     initial_seen  — set of lowercase titles to skip (source movies).
+    max_recs      — stop once this many unique recs are found. The caller
+                    divides a fixed total budget across the movies so the
+                    combined result set stays roughly constant (and fast)
+                    regardless of how many movies were requested.
     Returns a list of rec dicts: {title, poster_url, rt_url, upvotes}.
-    Caps at MAX_POSTS_PER_SUB posts per subreddit and MAX_RECS_PER_MOVIE
-    unique results so each request completes within a reasonable time.
     """
     seen = set(initial_seen)  # local copy — no cross-thread mutation
     recs = {}
 
-    print("  Searching Reddit for: " + source_title)
+    print("  Searching Reddit for: " + source_title + " (target " + str(max_recs) + ")")
 
     for subreddit in SUBREDDITS:
         posts = _search_arctic(subreddit, source_title, limit=MAX_POSTS_PER_SUB)
@@ -298,7 +303,7 @@ def _search_one_movie(source_title, genres, initial_seen):
         time.sleep(0.2)
 
         for post in posts:
-            if len(recs) >= MAX_RECS_PER_MOVIE:
+            if len(recs) >= max_recs:
                 break
 
             comments = _get_comments(post.get("id", ""))
@@ -309,7 +314,7 @@ def _search_one_movie(source_title, genres, initial_seen):
             extracted = _extract_recs_llm(post.get("title", ""), comments)
 
             for rec in extracted:
-                if len(recs) >= MAX_RECS_PER_MOVIE:
+                if len(recs) >= max_recs:
                     break
 
                 rec_title = rec.get("title", "").strip()
@@ -335,11 +340,22 @@ def _search_one_movie(source_title, genres, initial_seen):
                         "upvotes":    upvotes,
                     }
 
-        if len(recs) >= MAX_RECS_PER_MOVIE:
+        if len(recs) >= max_recs:
             break
 
     print("  Done [" + source_title + "]: " + str(len(recs)) + " recs found")
     return list(recs.values())
+
+
+def _per_movie_budget(num_movies, total=24):
+    """
+    Divides a fixed total rec budget across the requested movies so the
+    combined result count stays roughly constant no matter how many movies
+    were asked for. Each movie gets at least 4 slots.
+    """
+    if num_movies <= 0:
+        return total
+    return max(4, -(-total // num_movies))  # ceil division, floor of 4
 
 
 # ── MAIN ENTRY POINTS ─────────────────────────────────────────────────────────
