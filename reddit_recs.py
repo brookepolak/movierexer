@@ -234,24 +234,29 @@ def _search_arctic(subreddit, title, limit=100):
         return []
 
 
-def _get_comments(post_id, limit=100):
-    try:
-        resp = requests.get(
-            ARCTIC_BASE + "/comments/search",
-            params={"link_id": post_id, "limit": limit, "sort": "desc"},
-            headers=HEADERS, timeout=8
-        )
-        if resp.status_code != 200:
-            return []
-        comments = []
-        for c in resp.json().get("data", []):
-            body  = c.get("body", "").strip()
-            score = c.get("score", 0)
-            if body and len(body) > 10 and score > 0:
-                comments.append({"body": body[:300], "upvotes": score})
-        return sorted(comments, key=lambda x: -x["upvotes"])[:5]
-    except Exception:
-        return []
+def _get_comments(post_id, limit=40):
+    # Arctic Shift rate-limits bursts ("Timeout. Maybe slow down a bit"), so
+    # retry once with a short backoff before giving up on a post.
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                ARCTIC_BASE + "/comments/search",
+                params={"link_id": post_id, "limit": limit, "sort": "desc"},
+                headers=HEADERS, timeout=8
+            )
+            if resp.status_code != 200:
+                time.sleep(0.5)
+                continue
+            comments = []
+            for c in resp.json().get("data", []):
+                body  = c.get("body", "").strip()
+                score = c.get("score", 0)
+                if body and len(body) > 10 and score > 0:
+                    comments.append({"body": body[:300], "upvotes": score})
+            return sorted(comments, key=lambda x: -x["upvotes"])[:5]
+        except Exception:
+            time.sleep(0.5)
+    return []
 
 
 # ── GROQ EXTRACTION ───────────────────────────────────────────────────────────
@@ -278,8 +283,9 @@ def _extract_recs_llm(post_title, comments):
 
 # ── PER-MOVIE SEARCH ──────────────────────────────────────────────────────────
 
-MAX_POSTS_PER_SUB = 15   # posts fetched per subreddit per movie
-MAX_RECS_PER_MOVIE = 25  # default per-movie cap when caller doesn't specify
+MAX_POSTS_PER_SUB    = 10  # posts fetched per subreddit per movie
+MAX_POSTS_TO_PROCESS = 6   # hard cap on LLM-processed posts per movie (bounds runtime)
+MAX_RECS_PER_MOVIE   = 25  # default per-movie cap when caller doesn't specify
 
 
 def _search_one_movie(source_title, genres, initial_seen, max_recs=MAX_RECS_PER_MOVIE):
@@ -290,30 +296,35 @@ def _search_one_movie(source_title, genres, initial_seen, max_recs=MAX_RECS_PER_
                     divides a fixed total budget across the movies so the
                     combined result set stays roughly constant (and fast)
                     regardless of how many movies were requested.
+
+    Both Arctic Shift and Groq rate-limit bursty/concurrent access, so this
+    runs SEQUENTIALLY with small sleeps — reliable over fast. Runtime is bounded
+    by only LLM-processing up to MAX_POSTS_TO_PROCESS posts (each ~2s) and by
+    stopping at max_recs, so a single request comfortably fits the server's
+    request timeout.
     Returns a list of rec dicts: {title, poster_url, rt_url, upvotes}.
     """
-    seen = set(initial_seen)  # local copy — no cross-thread mutation
-    recs = {}
+    seen      = set(initial_seen)  # local copy
+    recs      = {}
+    processed = 0
 
     print("  Searching Reddit for: " + source_title + " (target " + str(max_recs) + ")")
 
     for subreddit in SUBREDDITS:
         posts = _search_arctic(subreddit, source_title, limit=MAX_POSTS_PER_SUB)
         print("    [" + subreddit + "] " + str(len(posts)) + " posts for " + source_title)
-        time.sleep(0.2)
 
         for post in posts:
-            if len(recs) >= max_recs:
+            if len(recs) >= max_recs or processed >= MAX_POSTS_TO_PROCESS:
                 break
 
             comments = _get_comments(post.get("id", ""))
-            time.sleep(0.2)
+            time.sleep(0.2)  # be gentle with Arctic Shift's rate limiter
             if not comments:
                 continue
 
-            extracted = _extract_recs_llm(post.get("title", ""), comments)
-
-            for rec in extracted:
+            processed += 1
+            for rec in _extract_recs_llm(post.get("title", ""), comments):
                 if len(recs) >= max_recs:
                     break
 
@@ -321,33 +332,27 @@ def _search_one_movie(source_title, genres, initial_seen, max_recs=MAX_RECS_PER_
                 if not rec_title or rec_title.lower() in seen:
                     continue
 
-                tmdb = _tmdb_data(rec_title)
-                time.sleep(0.15)
+                tmdb = _tmdb_data(rec_title)  # TMDB tolerates high rate; no sleep needed
 
                 if tmdb and not _matches_genres(tmdb["genre_ids"], genres):
                     continue
 
                 seen.add(rec_title.lower())
-                upvotes = rec.get("upvotes", 0)
+                recs[rec_title] = {
+                    "title":      rec_title,
+                    "poster_url": tmdb["poster_url"] if tmdb else None,
+                    "rt_url":     _movie_url(rec_title, tmdb),
+                    "upvotes":    rec.get("upvotes", 0),
+                }
 
-                if rec_title in recs:
-                    recs[rec_title]["upvotes"] += upvotes
-                else:
-                    recs[rec_title] = {
-                        "title":      rec_title,
-                        "poster_url": tmdb["poster_url"] if tmdb else None,
-                        "rt_url":     _movie_url(rec_title, tmdb),
-                        "upvotes":    upvotes,
-                    }
-
-        if len(recs) >= max_recs:
+        if len(recs) >= max_recs or processed >= MAX_POSTS_TO_PROCESS:
             break
 
-    print("  Done [" + source_title + "]: " + str(len(recs)) + " recs found")
+    print("  Done [" + source_title + "]: " + str(len(recs)) + " recs from " + str(processed) + " posts")
     return list(recs.values())
 
 
-def _per_movie_budget(num_movies, total=24):
+def _per_movie_budget(num_movies, total=18):
     """
     Divides a fixed total rec budget across the requested movies so the
     combined result count stays roughly constant no matter how many movies

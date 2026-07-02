@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 from flask_cors import CORS
 from openai import OpenAI
-import numpy as np
 import json
 import os
 from reddit_recs import get_recommendations, get_recommendations_streaming, _search_one_movie, _per_movie_budget
@@ -72,7 +71,7 @@ def parse_preferences():
         return jsonify({
             "success":        True,
             "parsed":         parsed_data,
-            "feature_vector": feature_vector.tolist(),
+            "feature_vector": feature_vector,
             "feature_schema": FEATURE_SCHEMA
         })
 
@@ -169,7 +168,7 @@ def create_feature_vector(parsed_data):
         vector.append(1 if era in parsed_data.get("eras", []) else 0)
     vector.append(len(parsed_data.get("mentioned_movies", [])))
     vector.append(len(parsed_data.get("mentioned_directors", [])))
-    return np.array(vector)
+    return vector
 
 
 if __name__ == '__main__':
