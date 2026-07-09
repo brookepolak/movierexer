@@ -289,8 +289,18 @@ def _search_pullpush(subreddit, title, limit=100):
         raise ArcticUnavailable("Could not reach the Reddit search service.")
 
     if resp.status_code == 200:
-        return resp.json().get("data", [])
-    if resp.status_code in (429, 500, 502, 503, 504):
+        try:
+            return resp.json().get("data", [])
+        except ValueError:
+            # 200 but not JSON — almost certainly a Cloudflare challenge page.
+            print("    PullPush returned non-JSON 200: " + resp.text[:200].replace("\n", " "))
+            raise ArcticUnavailable("Reddit search is temporarily unavailable (upstream returned an invalid response).")
+
+    # Surface the real response in the server logs — a silent empty result and
+    # an upstream block (e.g. Cloudflare 403 on datacenter IPs) look identical
+    # to users otherwise.
+    print("    PullPush HTTP " + str(resp.status_code) + ": " + resp.text[:200].replace("\n", " "))
+    if resp.status_code in (403, 429, 500, 502, 503, 504):
         raise ArcticUnavailable("Reddit search is temporarily unavailable (HTTP " + str(resp.status_code) + ").")
     return []
 
@@ -304,6 +314,7 @@ def _get_comments_pullpush(post_id, limit=40):
                 headers=HEADERS, timeout=8
             )
             if resp.status_code != 200:
+                print("    PullPush comments HTTP " + str(resp.status_code) + " for post " + str(post_id))
                 time.sleep(0.5)
                 continue
             return _filter_comments(resp.json().get("data", []))
