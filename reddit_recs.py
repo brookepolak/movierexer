@@ -33,7 +33,14 @@ PULLPUSH_BASE = "https://api.pullpush.io"
 TMDB_BASE    = "https://api.themoviedb.org/3"
 TMDB_IMG     = "https://image.tmdb.org/t/p/w300"
 SUBREDDITS   = ["MovieRecommendations", "MovieSuggestions"]
-HEADERS      = {"User-Agent": "Mozilla/5.0"}
+# A bare "Mozilla/5.0" UA scores as a bot with Cloudflare (which fronts
+# PullPush); a full browser-like header set is less likely to be blocked
+# when requests come from datacenter IPs like Render's.
+HEADERS      = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 
