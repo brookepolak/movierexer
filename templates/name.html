@@ -358,7 +358,7 @@
   <h1>MovieRexer</h1>
   <p class="subtitle">Reddit-powered recommendations</p>
 
-  <textarea id="user-input" placeholder="Tell me what movies you like."></textarea>
+  <textarea id="user-input" placeholder="Name one movie you love, and I'll find similar picks from Reddit."></textarea>
 
   <br>
   <button class="btn" id="submit-btn" onclick="getRecs()">Get Recs</button>
@@ -370,7 +370,6 @@
       <h2>Reddit Picks</h2>
       <span id="recs-source"></span>
     </div>
-    <div id="movie-badges"></div>
     <div class="loading-bar" id="loading-bar" style="display:none">
       <div class="loading-bar-inner" id="loading-bar-inner"></div>
     </div>
@@ -465,16 +464,16 @@
       return;
     }
 
-    // ── Step 2: stream Reddit recommendations per movie ───────────────────
-    const mentioned   = parsed.mentioned_movies || [];
+    // ── Step 2: search Reddit for the single movie ────────────────────────
+    // Only one movie is used, even if the user typed several.
+    const movie       = (parsed.mentioned_movies || [])[0];
     const recsSection = document.getElementById('recs-section');
     recsSection.style.display = 'block';
 
-    if (mentioned.length === 0) {
+    if (!movie) {
       document.getElementById('poster-grid').innerHTML =
-        '<p class="no-recs">Mention a specific movie to get Reddit-powered recommendations.</p>';
+        '<p class="no-recs">Name a specific movie to get Reddit-powered recommendations.</p>';
       document.getElementById('recs-source').textContent = '';
-      document.getElementById('movie-badges').innerHTML  = '';
       document.getElementById('pagination').style.display = 'none';
       allRecs = []; currentPage = 0;
       btn.disabled = false;
@@ -482,123 +481,56 @@
       return;
     }
 
-    // Render pending badges — one per source movie
-    const badgesEl = document.getElementById('movie-badges');
-    badgesEl.innerHTML = mentioned.map(m =>
-      '<span class="movie-badge pending" id="badge-' + cssId(m) + '">' + escHtml(m) + '</span>'
-    ).join('');
-
     document.getElementById('recs-source').textContent =
-      'r/MovieRecommendations + r/MovieSuggestions';
+      'similar to ' + movie;
     document.getElementById('poster-grid').innerHTML = '';
 
+    // ── Smooth loading bar ────────────────────────────────────────────────
+    // Creeps forward a little every 300 ms, easing as it nears 90 % so it's
+    // always moving during the (single) request but never appears "stuck".
     const loadingBar   = document.getElementById('loading-bar');
     const loadingInner = document.getElementById('loading-bar-inner');
     loadingBar.style.display = 'block';
-    loadingInner.style.width = '5%';
+    let pct = 8;
+    loadingInner.style.width = pct + '%';
+    const barInterval = setInterval(() => {
+      // approach 90% asymptotically — big steps early, tiny steps late
+      pct += Math.max(0.4, (90 - pct) * 0.06);
+      if (pct > 90) pct = 90;
+      loadingInner.style.width = pct.toFixed(1) + '%';
+    }, 300);
 
     btn.textContent = 'Searching Reddit…';
 
-    // merged pool keyed by lowercase title — filled as each movie request returns
-    const pool = {};
-    let completed = 0;
-    let animPct   = 5;
-
-    // Smooth bar: creep forward every 500 ms, staying up to 10 % ahead of
-    // the "earned" floor but never exceeding 88 % until everything is done.
-    const barInterval = setInterval(() => {
-      const floor  = 5 + (completed / mentioned.length) * 85;
-      const target = Math.min(floor + 10, 88);
-      if (animPct < target) {
-        animPct = Math.min(animPct + 1.5, target);
-        loadingInner.style.width = animPct.toFixed(1) + '%';
-      }
-    }, 500);
-
-    function bumpBar() {
-      // Jump to the earned floor immediately so completed movies always register
-      const floor = 5 + (completed / mentioned.length) * 85;
-      animPct = Math.max(animPct, floor);
-      loadingInner.style.width = animPct.toFixed(1) + '%';
-    }
-
-    function mergeAndRender(movie, recs) {
-      // Mark badge done
-      const badge = document.getElementById('badge-' + cssId(movie));
-      if (badge) badge.classList.remove('pending');
-
-      // Merge recs (accumulate upvotes for duplicates across movies)
-      for (const rec of (recs || [])) {
-        const key = rec.title.toLowerCase();
-        if (pool[key]) pool[key].upvotes += rec.upvotes;
-        else pool[key] = Object.assign({}, rec);
-      }
-
-      completed++;
-      bumpBar();
-
-      // Re-render sorted grid immediately
-      allRecs     = Object.values(pool).sort((a, b) => b.upvotes - a.upvotes);
-      currentPage = 0;
-      renderPage();
-    }
-
-    // Fire one request per movie in parallel — no SSE needed
-    const fetchOne = movie =>
-      fetch('/get-recs-one', {
+    try {
+      const res  = await fetch('/get-recs-one', {
         method:  'POST',
         headers: {'Content-Type': 'application/json'},
-        body:    JSON.stringify({
-          movie,
-          genres:     parsed.genres || [],
-          all_movies: mentioned
-        })
-      })
-      .then(r => r.text())
-      .then(text => {
-        if (!text) throw new Error('Server returned an empty response — the search may have timed out. Try fewer movies.');
-        try { return JSON.parse(text); }
-        catch(e) { throw new Error('Bad JSON from server: ' + text.slice(0, 120)); }
-      })
-      .then(data => {
-        if (data.success) {
-          mergeAndRender(data.movie, data.recs);
-        } else {
-          const msg = data.error || 'unknown server error';
-          errMsg.textContent = 'Server error for "' + movie + '": ' + msg;
-          console.error('Rec error for', movie, msg);
-          const badge = document.getElementById('badge-' + cssId(movie));
-          if (badge) { badge.classList.remove('pending'); badge.style.opacity = '0.35'; }
-          completed++;
-          bumpBar();
-        }
-      })
-      .catch(e => {
-        errMsg.textContent = e.message;
-        console.error('Fetch error for', movie, e);
-        const badge = document.getElementById('badge-' + cssId(movie));
-        if (badge) { badge.classList.remove('pending'); badge.style.opacity = '0.35'; }
-        completed++;
-        bumpBar();
+        body:    JSON.stringify({ movie, genres: parsed.genres || [] })
       });
+      const text = await res.text();
+      if (!text) throw new Error('The server took too long. Please try again.');
 
-    await Promise.all(mentioned.map(fetchOne));
+      let data;
+      try { data = JSON.parse(text); }
+      catch(e) { throw new Error('Unexpected server response. Please try again.'); }
 
-    clearInterval(barInterval);
-    loadingInner.style.width = '100%';
-    setTimeout(() => { loadingBar.style.display = 'none'; }, 400);
+      if (!data.success) throw new Error(data.error || 'unknown server error');
 
-    // Final re-sort once everything is in
-    allRecs     = Object.values(pool).sort((a, b) => b.upvotes - a.upvotes);
-    currentPage = 0;
-    renderPage();
+      allRecs     = (data.recs || []).sort((a, b) => b.upvotes - a.upvotes);
+      currentPage = 0;
+      renderPage();
 
-    btn.disabled = false;
-    btn.textContent = 'Get Recs';
-  }
-
-  function cssId(str) {
-    return str.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    } catch (e) {
+      errMsg.textContent = 'Error fetching recs: ' + e.message;
+      console.error('getRecs error:', e);
+    } finally {
+      clearInterval(barInterval);
+      loadingInner.style.width = '100%';
+      setTimeout(() => { loadingBar.style.display = 'none'; }, 400);
+      btn.disabled = false;
+      btn.textContent = 'Get Recs';
+    }
   }
 
   function renderPosters(recs) {

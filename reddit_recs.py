@@ -14,9 +14,6 @@ import os
 import re
 import json
 import time
-import queue
-import threading
-import concurrent.futures
 import requests
 from openai import OpenAI
 
@@ -32,6 +29,7 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
 if not TMDB_API_KEY:
     print("⚠️  TMDB_API_KEY not set — posters will not load. Get a free key at themoviedb.org/settings/api")
 ARCTIC_BASE  = "https://arctic-shift.photon-reddit.com/api"
+PULLPUSH_BASE = "https://api.pullpush.io"
 TMDB_BASE    = "https://api.themoviedb.org/3"
 TMDB_IMG     = "https://image.tmdb.org/t/p/w300"
 SUBREDDITS   = ["MovieRecommendations", "MovieSuggestions"]
@@ -219,6 +217,10 @@ def _movie_url(title, tmdb):
 
 # ── ARCTIC SHIFT ──────────────────────────────────────────────────────────────
 
+class ArcticUnavailable(Exception):
+    """Raised when a Reddit data source is unreachable or down for maintenance."""
+
+
 def _search_arctic(subreddit, title, limit=100):
     # NOTE: Arctic Shift's `title` param does a full-text title scan across all
     # history and times out (HTTP 422 "Timeout. Maybe slow down a bit").
@@ -229,9 +231,26 @@ def _search_arctic(subreddit, title, limit=100):
             params={"subreddit": subreddit, "query": title, "limit": limit},
             headers=HEADERS, timeout=12
         )
-        return resp.json().get("data", []) if resp.status_code == 200 else []
     except Exception:
-        return []
+        raise ArcticUnavailable("Could not reach the Reddit search service.")
+
+    if resp.status_code == 200:
+        return resp.json().get("data", [])
+    # 503 = maintenance, 429/422 = rate limited — the backend is temporarily
+    # unavailable, which is distinct from a genuinely empty result set.
+    if resp.status_code in (429, 500, 502, 503, 504):
+        raise ArcticUnavailable("Reddit search is temporarily unavailable (HTTP " + str(resp.status_code) + ").")
+    return []
+
+
+def _filter_comments(raw_comments):
+    comments = []
+    for c in raw_comments:
+        body  = c.get("body", "").strip()
+        score = c.get("score", 0)
+        if body and len(body) > 10 and score > 0:
+            comments.append({"body": body[:300], "upvotes": score})
+    return sorted(comments, key=lambda x: -x["upvotes"])[:5]
 
 
 def _get_comments(post_id, limit=40):
@@ -247,13 +266,47 @@ def _get_comments(post_id, limit=40):
             if resp.status_code != 200:
                 time.sleep(0.5)
                 continue
-            comments = []
-            for c in resp.json().get("data", []):
-                body  = c.get("body", "").strip()
-                score = c.get("score", 0)
-                if body and len(body) > 10 and score > 0:
-                    comments.append({"body": body[:300], "upvotes": score})
-            return sorted(comments, key=lambda x: -x["upvotes"])[:5]
+            return _filter_comments(resp.json().get("data", []))
+        except Exception:
+            time.sleep(0.5)
+    return []
+
+
+# ── PULLPUSH (fallback when Arctic Shift is down) ─────────────────────────────
+# PullPush (api.pullpush.io) is the other volunteer-run Pushshift successor.
+# Same data, Pushshift schema: posts have id/title, comments have body/score.
+# Caveat: it archives comments soon after posting, so scores are often frozen
+# at 1-2 rather than final vote counts — upvote ordering is weaker here.
+
+def _search_pullpush(subreddit, title, limit=100):
+    try:
+        resp = requests.get(
+            PULLPUSH_BASE + "/reddit/search/submission/",
+            params={"subreddit": subreddit, "q": title, "size": limit},
+            headers=HEADERS, timeout=12
+        )
+    except Exception:
+        raise ArcticUnavailable("Could not reach the Reddit search service.")
+
+    if resp.status_code == 200:
+        return resp.json().get("data", [])
+    if resp.status_code in (429, 500, 502, 503, 504):
+        raise ArcticUnavailable("Reddit search is temporarily unavailable (HTTP " + str(resp.status_code) + ").")
+    return []
+
+
+def _get_comments_pullpush(post_id, limit=40):
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                PULLPUSH_BASE + "/reddit/search/comment/",
+                params={"link_id": post_id, "size": limit},
+                headers=HEADERS, timeout=8
+            )
+            if resp.status_code != 200:
+                time.sleep(0.5)
+                continue
+            return _filter_comments(resp.json().get("data", []))
         except Exception:
             time.sleep(0.5)
     return []
@@ -283,51 +336,66 @@ def _extract_recs_llm(post_title, comments):
 
 # ── PER-MOVIE SEARCH ──────────────────────────────────────────────────────────
 
-MAX_POSTS_PER_SUB    = 10  # posts fetched per subreddit per movie
-MAX_POSTS_TO_PROCESS = 6   # hard cap on LLM-processed posts per movie (bounds runtime)
-MAX_RECS_PER_MOVIE   = 25  # default per-movie cap when caller doesn't specify
+MIN_RECS             = 10  # keep searching until we have at least this many recs
+MAX_POSTS_PER_SUB    = 30  # posts fetched per subreddit per movie
+MAX_POSTS_TO_PROCESS = 30  # hard safety cap on LLM-processed posts (bounds runtime)
 
 
-def _search_one_movie(source_title, genres, initial_seen, max_recs=MAX_RECS_PER_MOVIE):
+def _search_one_movie(source_title, genres, initial_seen, min_recs=MIN_RECS):
     """
-    Searches both subreddits for one source movie.
-    initial_seen  — set of lowercase titles to skip (source movies).
-    max_recs      — stop once this many unique recs are found. The caller
-                    divides a fixed total budget across the movies so the
-                    combined result set stays roughly constant (and fast)
-                    regardless of how many movies were requested.
+    Searches both subreddits for one source movie and keeps going until it has
+    at least `min_recs` recommendations (or it genuinely runs out of posts /
+    hits the MAX_POSTS_TO_PROCESS safety cap).
 
-    Both Arctic Shift and Groq rate-limit bursty/concurrent access, so this
-    runs SEQUENTIALLY with small sleeps — reliable over fast. Runtime is bounded
-    by only LLM-processing up to MAX_POSTS_TO_PROCESS posts (each ~2s) and by
-    stopping at max_recs, so a single request comfortably fits the server's
-    request timeout.
+    Uses Arctic Shift first; if it's down, falls back to PullPush for the rest
+    of the search. Raises ArcticUnavailable only if both sources are down.
+
+    initial_seen  — set of lowercase titles to skip (the source movie itself).
+
+    Arctic Shift and Groq rate-limit bursty access, so this runs SEQUENTIALLY
+    with a small sleep between comment fetches — reliable over fast. A single
+    movie search comfortably fits the server's request timeout.
     Returns a list of rec dicts: {title, poster_url, rt_url, upvotes}.
     """
     seen      = set(initial_seen)  # local copy
     recs      = {}
     processed = 0
+    use_pullpush = False  # flips permanently once Arctic Shift fails
 
-    print("  Searching Reddit for: " + source_title + " (target " + str(max_recs) + ")")
+    print("  Searching Reddit for: " + source_title + " (target " + str(min_recs) + " recs)")
 
     for subreddit in SUBREDDITS:
-        posts = _search_arctic(subreddit, source_title, limit=MAX_POSTS_PER_SUB)
-        print("    [" + subreddit + "] " + str(len(posts)) + " posts for " + source_title)
+        if len(recs) >= min_recs or processed >= MAX_POSTS_TO_PROCESS:
+            break
+
+        if not use_pullpush:
+            try:
+                posts = _search_arctic(subreddit, source_title, limit=MAX_POSTS_PER_SUB)
+            except ArcticUnavailable:
+                print("    Arctic Shift unavailable — falling back to PullPush")
+                use_pullpush = True
+        if use_pullpush:
+            # If PullPush is also down, this raises ArcticUnavailable, which
+            # propagates to the route and becomes a 503 for the user.
+            posts = _search_pullpush(subreddit, source_title, limit=MAX_POSTS_PER_SUB)
+
+        print("    [" + subreddit + "] " + str(len(posts)) + " posts for " + source_title
+              + (" (PullPush)" if use_pullpush else ""))
 
         for post in posts:
-            if len(recs) >= max_recs or processed >= MAX_POSTS_TO_PROCESS:
+            if len(recs) >= min_recs or processed >= MAX_POSTS_TO_PROCESS:
                 break
 
-            comments = _get_comments(post.get("id", ""))
-            time.sleep(0.2)  # be gentle with Arctic Shift's rate limiter
+            if use_pullpush:
+                comments = _get_comments_pullpush(post.get("id", ""))
+            else:
+                comments = _get_comments(post.get("id", ""))
+            time.sleep(0.2)  # be gentle with the archive's rate limiter
             if not comments:
                 continue
 
             processed += 1
             for rec in _extract_recs_llm(post.get("title", ""), comments):
-                if len(recs) >= max_recs:
-                    break
-
                 rec_title = rec.get("title", "").strip()
                 if not rec_title or rec_title.lower() in seen:
                     continue
@@ -345,69 +413,5 @@ def _search_one_movie(source_title, genres, initial_seen, max_recs=MAX_RECS_PER_
                     "upvotes":    rec.get("upvotes", 0),
                 }
 
-        if len(recs) >= max_recs or processed >= MAX_POSTS_TO_PROCESS:
-            break
-
     print("  Done [" + source_title + "]: " + str(len(recs)) + " recs from " + str(processed) + " posts")
-    return list(recs.values())
-
-
-def _per_movie_budget(num_movies, total=18):
-    """
-    Divides a fixed total rec budget across the requested movies so the
-    combined result count stays roughly constant no matter how many movies
-    were asked for. Each movie gets at least 4 slots.
-    """
-    if num_movies <= 0:
-        return total
-    return max(4, -(-total // num_movies))  # ceil division, floor of 4
-
-
-# ── MAIN ENTRY POINTS ─────────────────────────────────────────────────────────
-
-def get_recommendations(movie_titles, genres=None, max_recs=120):
-    """
-    Searches Reddit for every movie in parallel and returns a merged, sorted list.
-    """
-    genres       = genres or []
-    initial_seen = set(t.lower() for t in movie_titles)
-    merged       = {}
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(movie_titles), 4)) as ex:
-        futures = {ex.submit(_search_one_movie, t, genres, initial_seen): t
-                   for t in movie_titles}
-        for future in concurrent.futures.as_completed(futures):
-            for rec in future.result():
-                key = rec["title"].lower()
-                if key in merged:
-                    merged[key]["upvotes"] += rec["upvotes"]
-                else:
-                    merged[key] = rec
-
-    sorted_recs = sorted(merged.values(), key=lambda x: -x["upvotes"])
-    return sorted_recs[:max_recs]
-
-
-def get_recommendations_streaming(movie_titles, genres=None):
-    """
-    Generator. Searches every movie in parallel; yields (movie_title, recs_list)
-    as each search finishes — callers see results arrive one movie at a time.
-    """
-    genres       = genres or []
-    initial_seen = set(t.lower() for t in movie_titles)
-    result_queue = queue.Queue()
-
-    def _worker(title):
-        recs = _search_one_movie(title, genres, initial_seen)
-        result_queue.put((title, recs))
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(movie_titles), 4)) as ex:
-        for title in movie_titles:
-            ex.submit(_worker, title)
-
-        for _ in movie_titles:
-            try:
-                title, recs = result_queue.get(timeout=300)
-                yield title, recs
-            except queue.Empty:
-                break
+    return sorted(recs.values(), key=lambda x: -x["upvotes"])

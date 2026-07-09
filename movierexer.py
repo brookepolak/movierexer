@@ -1,9 +1,9 @@
-from flask import Flask, request, jsonify, render_template, Response, stream_with_context
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from openai import OpenAI
 import json
 import os
-from reddit_recs import get_recommendations, get_recommendations_streaming, _search_one_movie, _per_movie_budget
+from reddit_recs import _search_one_movie, ArcticUnavailable
 
 try:
     from dotenv import load_dotenv
@@ -79,83 +79,31 @@ def parse_preferences():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/get-recs', methods=['POST'])
-def get_recs():
-    """
-    Takes mentioned_movies from the parsed preferences,
-    searches Reddit via Arctic Shift, and returns movie recommendations
-    with TMDB posters and Rotten Tomatoes links.
-    """
-    try:
-        data            = request.get_json()
-        mentioned       = data.get('mentioned_movies', [])
-
-        if not mentioned:
-            return jsonify({"success": True, "recommendations": []})
-
-        genres          = data.get('genres', [])
-        recommendations = get_recommendations(mentioned, genres=genres, max_recs=120)
-
-        return jsonify({
-            "success":         True,
-            "recommendations": recommendations
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route('/get-recs-one', methods=['POST'])
 def get_recs_one():
     """
     Searches Reddit for a single movie title and returns its recommendations.
-    The frontend fires one of these per movie in parallel.
+    Keeps searching until it has at least MIN_RECS results.
     """
     try:
-        data        = request.get_json()
-        movie       = data.get('movie', '').strip()
-        genres      = data.get('genres', [])
-        all_movies  = data.get('all_movies', [])   # used to seed the exclusion set
+        data   = request.get_json()
+        movie  = data.get('movie', '').strip()
+        genres = data.get('genres', [])
 
         if not movie:
             return jsonify({"success": True, "movie": movie, "recs": []})
 
-        # Divide a fixed total across all requested movies so the combined
-        # result count stays constant and searches don't time out.
-        budget       = _per_movie_budget(len(all_movies) or 1)
-        initial_seen = set(t.lower() for t in all_movies)
-        recs         = _search_one_movie(movie, genres, initial_seen, max_recs=budget)
+        recs = _search_one_movie(movie, genres, {movie.lower()})
 
         return jsonify({"success": True, "movie": movie, "recs": recs})
 
+    except ArcticUnavailable as e:
+        # Upstream Reddit data source is down/rate-limited — tell the user it's
+        # temporary rather than showing "no recommendations found".
+        return jsonify({"success": False, "error": str(e) + " Please try again in a few minutes."}), 503
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route('/get-recs-stream', methods=['POST'])
-def get_recs_stream():
-    """
-    SSE endpoint. Streams (movie_title, recs) pairs as each parallel search
-    finishes, so the frontend can render progressively.
-    """
-    data      = request.get_json()
-    mentioned = data.get('mentioned_movies', [])
-    genres    = data.get('genres', [])
-
-    def generate():
-        if not mentioned:
-            yield 'data: {"done":true}\n\n'
-            return
-        for movie_title, recs in get_recommendations_streaming(mentioned, genres=genres):
-            payload = json.dumps({'movie': movie_title, 'recs': recs})
-            yield 'data: ' + payload + '\n\n'
-        yield 'data: {"done":true}\n\n'
-
-    return Response(
-        stream_with_context(generate()),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
-    )
 
 
 def create_feature_vector(parsed_data):
