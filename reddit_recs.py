@@ -1,48 +1,46 @@
 """
 reddit_recs.py
 --------------
-Standalone recommendation engine. Takes a list of movie titles + genres,
-searches Arctic Shift for each movie individually, extracts recommendations
-via Groq, filters by genre via TMDB, and returns posters sorted by upvotes.
+Serves movie recommendations from the local cache built by build_db.py
+(recs_cache: a graph of movie-to-movie edges mined from Reddit threads,
+weighted by upvotes). No live Reddit APIs at request time — TMDB is called
+only to decorate results with posters, genres, and links.
 
 Requires in .env:
-    GROQ_API_KEY
-    TMDB_API_KEY
+    TMDB_API_KEY   (optional — posters/genre filtering degrade without it)
 """
 
 import os
 import re
-import json
-import time
+import sqlite3
+
 import requests
-from openai import OpenAI
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 except ImportError:
     pass
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# First hit wins: explicit override → full local archive → the slim,
+# committed export (what production serves from).
+DB_CANDIDATES = [
+    os.environ.get("MOVIEREXER_DB"),
+    os.path.join(BASE_DIR, "data", "movies.db"),
+    os.path.join(BASE_DIR, "recs.db"),
+]
+
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
+TMDB_BASE    = "https://api.themoviedb.org/3"
+TMDB_IMG     = "https://image.tmdb.org/t/p/w300"
 
 if not TMDB_API_KEY:
     print("⚠️  TMDB_API_KEY not set — posters will not load. Get a free key at themoviedb.org/settings/api")
-ARCTIC_BASE  = "https://arctic-shift.photon-reddit.com/api"
-PULLPUSH_BASE = "https://api.pullpush.io"
-TMDB_BASE    = "https://api.themoviedb.org/3"
-TMDB_IMG     = "https://image.tmdb.org/t/p/w300"
-SUBREDDITS   = ["MovieRecommendations", "MovieSuggestions"]
-# A bare "Mozilla/5.0" UA scores as a bot with Cloudflare (which fronts
-# PullPush); a full browser-like header set is less likely to be blocked
-# when requests come from datacenter IPs like Render's.
-HEADERS      = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
 
-client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+MAX_RECS       = 24   # results returned per query
+MAX_CANDIDATES = 80   # ranked candidates considered before giving up (genre
+                      # filtering can reject many, but TMDB calls aren't free)
 
 # Map from genre names → TMDB genre IDs
 # Covers FEATURE_SCHEMA genres + many common aliases/subgenres
@@ -143,18 +141,93 @@ GENRE_MAP = {
     "courtroom":         18,
 }
 
-SYSTEM_PROMPT = """You are a movie title extractor for Reddit posts.
 
-Given a post title and its top comments from a movie recommendation subreddit, extract
-the movies being recommended in the comments.
+def _norm_title(title):
+    """Normalization key so 'The Matrix', 'the matrix' and 'Matrix!' merge.
+    Must stay identical to the keying used when building the cache
+    (build_db.py imports this function)."""
+    key = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in title.lower())
+    key = " ".join(key.split())
+    if key.startswith("the "):
+        key = key[4:]
+    return key
 
-Return ONLY a JSON object:
-{ "recommendations": [ {"title": "Movie Title", "upvotes": 123}, ... ] }
 
-Rules:
-- Exact canonical movie titles only
-- Movies only, no TV shows or books
-- Maximum 8 recommendations per post"""
+# ── CACHE ─────────────────────────────────────────────────────────────────────
+
+class CacheUnavailable(Exception):
+    """Raised when the local recommendations DB is missing or empty."""
+
+
+def _connect():
+    for path in DB_CANDIDATES:
+        if not path or not os.path.exists(path):
+            continue
+        con = sqlite3.connect(path)
+        try:
+            n = con.execute("SELECT COUNT(*) FROM recs_cache").fetchone()[0]
+        except sqlite3.OperationalError:
+            n = 0
+        if n:
+            return con
+        con.close()
+    raise CacheUnavailable("The recommendations cache is missing or empty — "
+                           "build it with build_db.py (ingest + extract + export).")
+
+
+def get_recs(movies, genres):
+    """
+    Queries the cache for any number of input movies and merges the results.
+    A candidate recommended by several of the user's movies ranks above one
+    recommended by a single movie; ties break on summed edge weight (upvotes).
+    Input movies themselves are excluded from the results.
+
+    Returns {"recs": [...], "found": [movies with cache hits],
+             "missing": [movies without]}.
+    """
+    con = _connect()
+    input_keys = set()
+    cleaned    = []
+    for movie in movies:
+        key = _norm_title(movie)
+        if key and key not in input_keys:
+            input_keys.add(key)
+            cleaned.append((key, movie))
+
+    found, missing = [], []
+    agg = {}
+    for key, movie in cleaned:
+        rows = con.execute(
+            """SELECT rec_key, rec_title, total_upvotes FROM recs_cache
+               WHERE source_key = ?""", (key,)
+        ).fetchall()
+        (found if rows else missing).append(movie)
+        for rec_key, rec_title, total_upvotes in rows:
+            if rec_key in input_keys:
+                continue
+            entry = agg.setdefault(rec_key, {"title": rec_title,
+                                             "weight": 0, "matches": 0})
+            entry["weight"]  += total_upvotes
+            entry["matches"] += 1
+    con.close()
+
+    ranked = sorted(agg.values(), key=lambda e: (-e["matches"], -e["weight"]))
+
+    recs = []
+    for entry in ranked[:MAX_CANDIDATES]:
+        if len(recs) >= MAX_RECS:
+            break
+        tmdb = _tmdb_data(entry["title"])
+        if tmdb and not _matches_genres(tmdb["genre_ids"], genres):
+            continue
+        recs.append({
+            "title":      entry["title"],
+            "poster_url": tmdb["poster_url"] if tmdb else None,
+            "rt_url":     _movie_url(entry["title"], tmdb),
+            "upvotes":    entry["weight"],
+            "matches":    entry["matches"],
+        })
+    return {"recs": recs, "found": found, "missing": missing}
 
 
 # ── TMDB ──────────────────────────────────────────────────────────────────────
@@ -200,7 +273,7 @@ def _matches_genres(genre_ids, requested_genres):
     return bool(wanted_ids & set(genre_ids))
 
 
-# ── RT URL ────────────────────────────────────────────────────────────────────
+# ── MOVIE LINKS ───────────────────────────────────────────────────────────────
 
 def _rt_url(title):
     """Best-effort Rotten Tomatoes URL. RT drops leading articles and uses underscores."""
@@ -220,216 +293,3 @@ def _movie_url(title, tmdb):
     if tmdb and tmdb.get("movie_url"):
         return tmdb["movie_url"]
     return _rt_url(title)
-
-
-# ── ARCTIC SHIFT ──────────────────────────────────────────────────────────────
-
-class ArcticUnavailable(Exception):
-    """Raised when a Reddit data source is unreachable or down for maintenance."""
-
-
-def _search_arctic(subreddit, title, limit=100):
-    # NOTE: Arctic Shift's `title` param does a full-text title scan across all
-    # history and times out (HTTP 422 "Timeout. Maybe slow down a bit").
-    # `query` searches title+body via the fast index and returns quickly.
-    try:
-        resp = requests.get(
-            ARCTIC_BASE + "/posts/search",
-            params={"subreddit": subreddit, "query": title, "limit": limit},
-            headers=HEADERS, timeout=12
-        )
-    except Exception:
-        raise ArcticUnavailable("Could not reach the Reddit search service.")
-
-    if resp.status_code == 200:
-        return resp.json().get("data", [])
-    # 503 = maintenance, 429/422 = rate limited — the backend is temporarily
-    # unavailable, which is distinct from a genuinely empty result set.
-    if resp.status_code in (429, 500, 502, 503, 504):
-        raise ArcticUnavailable("Reddit search is temporarily unavailable (HTTP " + str(resp.status_code) + ").")
-    return []
-
-
-def _filter_comments(raw_comments):
-    comments = []
-    for c in raw_comments:
-        body  = c.get("body", "").strip()
-        score = c.get("score", 0)
-        if body and len(body) > 10 and score > 0:
-            comments.append({"body": body[:300], "upvotes": score})
-    return sorted(comments, key=lambda x: -x["upvotes"])[:5]
-
-
-def _get_comments(post_id, limit=40):
-    # Arctic Shift rate-limits bursts ("Timeout. Maybe slow down a bit"), so
-    # retry once with a short backoff before giving up on a post.
-    for attempt in range(2):
-        try:
-            resp = requests.get(
-                ARCTIC_BASE + "/comments/search",
-                params={"link_id": post_id, "limit": limit, "sort": "desc"},
-                headers=HEADERS, timeout=8
-            )
-            if resp.status_code != 200:
-                time.sleep(0.5)
-                continue
-            return _filter_comments(resp.json().get("data", []))
-        except Exception:
-            time.sleep(0.5)
-    return []
-
-
-# ── PULLPUSH (fallback when Arctic Shift is down) ─────────────────────────────
-# PullPush (api.pullpush.io) is the other volunteer-run Pushshift successor.
-# Same data, Pushshift schema: posts have id/title, comments have body/score.
-# Caveat: it archives comments soon after posting, so scores are often frozen
-# at 1-2 rather than final vote counts — upvote ordering is weaker here.
-
-def _search_pullpush(subreddit, title, limit=100):
-    try:
-        resp = requests.get(
-            PULLPUSH_BASE + "/reddit/search/submission/",
-            params={"subreddit": subreddit, "q": title, "size": limit},
-            headers=HEADERS, timeout=12
-        )
-    except Exception:
-        raise ArcticUnavailable("Could not reach the Reddit search service.")
-
-    if resp.status_code == 200:
-        try:
-            return resp.json().get("data", [])
-        except ValueError:
-            # 200 but not JSON — almost certainly a Cloudflare challenge page.
-            print("    PullPush returned non-JSON 200: " + resp.text[:200].replace("\n", " "))
-            raise ArcticUnavailable("Reddit search is temporarily unavailable (upstream returned an invalid response).")
-
-    # Surface the real response in the server logs — a silent empty result and
-    # an upstream block (e.g. Cloudflare 403 on datacenter IPs) look identical
-    # to users otherwise.
-    print("    PullPush HTTP " + str(resp.status_code) + ": " + resp.text[:200].replace("\n", " "))
-    if resp.status_code in (403, 429, 500, 502, 503, 504):
-        raise ArcticUnavailable("Reddit search is temporarily unavailable (HTTP " + str(resp.status_code) + ").")
-    return []
-
-
-def _get_comments_pullpush(post_id, limit=40):
-    for attempt in range(2):
-        try:
-            resp = requests.get(
-                PULLPUSH_BASE + "/reddit/search/comment/",
-                params={"link_id": post_id, "size": limit},
-                headers=HEADERS, timeout=8
-            )
-            if resp.status_code != 200:
-                print("    PullPush comments HTTP " + str(resp.status_code) + " for post " + str(post_id))
-                time.sleep(0.5)
-                continue
-            return _filter_comments(resp.json().get("data", []))
-        except Exception:
-            time.sleep(0.5)
-    return []
-
-
-# ── GROQ EXTRACTION ───────────────────────────────────────────────────────────
-
-def _extract_recs_llm(post_title, comments):
-    comments_text = "\n".join(
-        "[" + str(c["upvotes"]) + " upvotes] " + c["body"] for c in comments
-    )
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": "POST: " + post_title + "\n\nCOMMENTS:\n" + comments_text}
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"},
-            max_tokens=512,
-        )
-        return json.loads(response.choices[0].message.content).get("recommendations", [])
-    except Exception:
-        return []
-
-
-# ── PER-MOVIE SEARCH ──────────────────────────────────────────────────────────
-
-MIN_RECS             = 10  # keep searching until we have at least this many recs
-MAX_POSTS_PER_SUB    = 30  # posts fetched per subreddit per movie
-MAX_POSTS_TO_PROCESS = 30  # hard safety cap on LLM-processed posts (bounds runtime)
-
-
-def _search_one_movie(source_title, genres, initial_seen, min_recs=MIN_RECS):
-    """
-    Searches both subreddits for one source movie and keeps going until it has
-    at least `min_recs` recommendations (or it genuinely runs out of posts /
-    hits the MAX_POSTS_TO_PROCESS safety cap).
-
-    Uses Arctic Shift first; if it's down, falls back to PullPush for the rest
-    of the search. Raises ArcticUnavailable only if both sources are down.
-
-    initial_seen  — set of lowercase titles to skip (the source movie itself).
-
-    Arctic Shift and Groq rate-limit bursty access, so this runs SEQUENTIALLY
-    with a small sleep between comment fetches — reliable over fast. A single
-    movie search comfortably fits the server's request timeout.
-    Returns a list of rec dicts: {title, poster_url, rt_url, upvotes}.
-    """
-    seen      = set(initial_seen)  # local copy
-    recs      = {}
-    processed = 0
-    use_pullpush = False  # flips permanently once Arctic Shift fails
-
-    print("  Searching Reddit for: " + source_title + " (target " + str(min_recs) + " recs)")
-
-    for subreddit in SUBREDDITS:
-        if len(recs) >= min_recs or processed >= MAX_POSTS_TO_PROCESS:
-            break
-
-        if not use_pullpush:
-            try:
-                posts = _search_arctic(subreddit, source_title, limit=MAX_POSTS_PER_SUB)
-            except ArcticUnavailable:
-                print("    Arctic Shift unavailable — falling back to PullPush")
-                use_pullpush = True
-        if use_pullpush:
-            # If PullPush is also down, this raises ArcticUnavailable, which
-            # propagates to the route and becomes a 503 for the user.
-            posts = _search_pullpush(subreddit, source_title, limit=MAX_POSTS_PER_SUB)
-
-        print("    [" + subreddit + "] " + str(len(posts)) + " posts for " + source_title
-              + (" (PullPush)" if use_pullpush else ""))
-
-        for post in posts:
-            if len(recs) >= min_recs or processed >= MAX_POSTS_TO_PROCESS:
-                break
-
-            if use_pullpush:
-                comments = _get_comments_pullpush(post.get("id", ""))
-            else:
-                comments = _get_comments(post.get("id", ""))
-            time.sleep(0.2)  # be gentle with the archive's rate limiter
-            if not comments:
-                continue
-
-            processed += 1
-            for rec in _extract_recs_llm(post.get("title", ""), comments):
-                rec_title = rec.get("title", "").strip()
-                if not rec_title or rec_title.lower() in seen:
-                    continue
-
-                tmdb = _tmdb_data(rec_title)  # TMDB tolerates high rate; no sleep needed
-
-                if tmdb and not _matches_genres(tmdb["genre_ids"], genres):
-                    continue
-
-                seen.add(rec_title.lower())
-                recs[rec_title] = {
-                    "title":      rec_title,
-                    "poster_url": tmdb["poster_url"] if tmdb else None,
-                    "rt_url":     _movie_url(rec_title, tmdb),
-                    "upvotes":    rec.get("upvotes", 0),
-                }
-
-    print("  Done [" + source_title + "]: " + str(len(recs)) + " recs from " + str(processed) + " posts")
-    return sorted(recs.values(), key=lambda x: -x["upvotes"])

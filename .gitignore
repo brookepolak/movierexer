@@ -51,3 +51,10 @@ config.py
 # Flask
 instance/
 .webassets-cache
+
+# Local Reddit archive (GBs — rebuild with build_db.py; see its docstring)
+data/
+reddit_dumps/
+
+# Local Claude Code config
+.claude/

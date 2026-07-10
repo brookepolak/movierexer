@@ -358,7 +358,7 @@
   <h1>MovieRexer</h1>
   <p class="subtitle">Reddit-powered recommendations</p>
 
-  <textarea id="user-input" placeholder="Name one movie you love, and I'll find similar picks from Reddit."></textarea>
+  <textarea id="user-input" placeholder="Name any movies you love, and I'll find similar picks from Reddit."></textarea>
 
   <br>
   <button class="btn" id="submit-btn" onclick="getRecs()">Get Recs</button>
@@ -464,15 +464,14 @@
       return;
     }
 
-    // ── Step 2: search Reddit for the single movie ────────────────────────
-    // Only one movie is used, even if the user typed several.
-    const movie       = (parsed.mentioned_movies || [])[0];
+    // ── Step 2: look up every mentioned movie in the local cache ──────────
+    const movies      = parsed.mentioned_movies || [];
     const recsSection = document.getElementById('recs-section');
     recsSection.style.display = 'block';
 
-    if (!movie) {
+    if (movies.length === 0) {
       document.getElementById('poster-grid').innerHTML =
-        '<p class="no-recs">Name a specific movie to get Reddit-powered recommendations.</p>';
+        '<p class="no-recs">Name at least one specific movie to get Reddit-powered recommendations.</p>';
       document.getElementById('recs-source').textContent = '';
       document.getElementById('pagination').style.display = 'none';
       allRecs = []; currentPage = 0;
@@ -482,31 +481,28 @@
     }
 
     document.getElementById('recs-source').textContent =
-      'similar to ' + movie;
+      'similar to ' + movies.join(', ');
     document.getElementById('poster-grid').innerHTML = '';
 
-    // ── Smooth loading bar ────────────────────────────────────────────────
-    // Creeps forward a little every 300 ms, easing as it nears 90 % so it's
-    // always moving during the (single) request but never appears "stuck".
+    // ── Loading bar (cache lookups are fast; this is mostly for TMDB) ─────
     const loadingBar   = document.getElementById('loading-bar');
     const loadingInner = document.getElementById('loading-bar-inner');
     loadingBar.style.display = 'block';
     let pct = 8;
     loadingInner.style.width = pct + '%';
     const barInterval = setInterval(() => {
-      // approach 90% asymptotically — big steps early, tiny steps late
       pct += Math.max(0.4, (90 - pct) * 0.06);
       if (pct > 90) pct = 90;
       loadingInner.style.width = pct.toFixed(1) + '%';
     }, 300);
 
-    btn.textContent = 'Searching Reddit…';
+    btn.textContent = 'Looking up recs…';
 
     try {
-      const res  = await fetch('/get-recs-one', {
+      const res  = await fetch('/get-recs', {
         method:  'POST',
         headers: {'Content-Type': 'application/json'},
-        body:    JSON.stringify({ movie, genres: parsed.genres || [] })
+        body:    JSON.stringify({ movies, genres: parsed.genres || [] })
       });
       const text = await res.text();
       if (!text) throw new Error('The server took too long. Please try again.');
@@ -517,9 +513,15 @@
 
       if (!data.success) throw new Error(data.error || 'unknown server error');
 
-      allRecs     = (data.recs || []).sort((a, b) => b.upvotes - a.upvotes);
+      // server order is already ranked: most shared sources, then upvotes
+      allRecs     = data.recs || [];
       currentPage = 0;
       renderPage();
+
+      if ((data.missing || []).length > 0) {
+        document.getElementById('recs-source').textContent +=
+          ' — no Reddit data yet for ' + data.missing.join(', ');
+      }
 
     } catch (e) {
       errMsg.textContent = 'Error fetching recs: ' + e.message;

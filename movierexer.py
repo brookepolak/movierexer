@@ -3,7 +3,7 @@ from flask_cors import CORS
 from openai import OpenAI
 import json
 import os
-from reddit_recs import _search_one_movie, ArcticUnavailable
+from reddit_recs import get_recs, CacheUnavailable
 
 try:
     from dotenv import load_dotenv
@@ -19,6 +19,14 @@ if not api_key:
     raise ValueError("GROQ_API_KEY environment variable not set.")
 
 client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+
+# Preference parsing is the only LLM call left at request time. Fall through
+# the chain when a model's daily rate limit is exhausted.
+PARSE_MODELS = [
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-120b",
+]
 
 FEATURE_SCHEMA = {
     "genres": ["thriller", "sci-fi", "drama", "horror", "comedy", "action", "romance"],
@@ -39,31 +47,39 @@ def parse_preferences():
         if not user_input:
             return jsonify({"error": "No input provided"}), 400
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{
-                "role": "system",
-                "content": """You are a movie preference parser. Extract structured information from user input.
-                Return ONLY a JSON object with these fields:
-                - mentioned_movies: array of movie titles
-                - mentioned_directors: array of director names, and also directors of any movies listed
-                - genres: array of genres from this list: thriller, sci-fi, drama, horror, comedy, action, romance
-                - themes: array of themes from this list: psychological, mind-bending, indie, cerebral, experimental
-                - eras: array of decades like ["2010s", "2020s"] from this list: 1960s, 1970s, 1980s, 1990s, 2000s, 2010s, 2020s.
+        last_error = None
+        for model in PARSE_MODELS:
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{
+                        "role": "system",
+                        "content": """You are a movie preference parser. Extract structured information from user input.
+                        Return ONLY a JSON object with these fields:
+                        - mentioned_movies: array of movie titles
+                        - mentioned_directors: array of director names, and also directors of any movies listed
+                        - genres: array of genres from this list: thriller, sci-fi, drama, horror, comedy, action, romance
+                        - themes: array of themes from this list: psychological, mind-bending, indie, cerebral, experimental
+                        - eras: array of decades like ["2010s", "2020s"] from this list: 1960s, 1970s, 1980s, 1990s, 2000s, 2010s, 2020s.
 
-                IMPORTANT: When user says they DON'T like something (e.g., "I don't like old movies"), infer the OPPOSITE eras they DO like.
-                - "don't like old movies" = ["2010s", "2020s"]
-                - "not a fan of recent stuff" = ["1960s", "1970s", "1980s", "1990s", "2000s"]
+                        IMPORTANT: When user says they DON'T like something (e.g., "I don't like old movies"), infer the OPPOSITE eras they DO like.
+                        - "don't like old movies" = ["2010s", "2020s"]
+                        - "not a fan of recent stuff" = ["1960s", "1970s", "1980s", "1990s", "2000s"]
 
-                Example input: "I like movies like Coherence and Primer"
-                Example output: {"mentioned_movies": ["Coherence", "Primer"], "mentioned_directors": [], "genres": ["sci-fi", "thriller"], "themes": ["psychological", "mind-bending", "cerebral"], "eras": ["2010s"]}"""
-            }, {
-                "role": "user",
-                "content": user_input
-            }],
-            temperature=0.1,
-            response_format={"type": "json_object"}
-        )
+                        Example input: "I like movies like Coherence and Primer"
+                        Example output: {"mentioned_movies": ["Coherence", "Primer"], "mentioned_directors": [], "genres": ["sci-fi", "thriller"], "themes": ["psychological", "mind-bending", "cerebral"], "eras": ["2010s"]}"""
+                    }, {
+                        "role": "user",
+                        "content": user_input
+                    }],
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
+                )
+                break
+            except Exception as e:
+                last_error = e
+        else:
+            raise last_error
 
         parsed_data    = json.loads(response.choices[0].message.content)
         feature_vector = create_feature_vector(parsed_data)
@@ -79,28 +95,35 @@ def parse_preferences():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/get-recs-one', methods=['POST'])
-def get_recs_one():
+@app.route('/get-recs', methods=['POST'])
+def get_recs_route():
     """
-    Searches Reddit for a single movie title and returns its recommendations.
-    Keeps searching until it has at least MIN_RECS results.
+    Looks up any number of movies in the local recommendation cache and
+    returns the merged, ranked recommendations. Pure DB reads plus TMDB
+    poster lookups — no Reddit APIs, no LLM.
     """
     try:
         data   = request.get_json()
-        movie  = data.get('movie', '').strip()
+        movies = [m.strip() for m in data.get('movies', [])
+                  if isinstance(m, str) and m.strip()]
         genres = data.get('genres', [])
 
-        if not movie:
-            return jsonify({"success": True, "movie": movie, "recs": []})
+        if not movies:
+            return jsonify({"success": True, "movies": [],
+                            "recs": [], "found": [], "missing": []})
 
-        recs = _search_one_movie(movie, genres, {movie.lower()})
+        result = get_recs(movies, genres)
 
-        return jsonify({"success": True, "movie": movie, "recs": recs})
+        return jsonify({
+            "success": True,
+            "movies":  movies,
+            "recs":    result["recs"],
+            "found":   result["found"],
+            "missing": result["missing"],
+        })
 
-    except ArcticUnavailable as e:
-        # Upstream Reddit data source is down/rate-limited — tell the user it's
-        # temporary rather than showing "no recommendations found".
-        return jsonify({"success": False, "error": str(e) + " Please try again in a few minutes."}), 503
+    except CacheUnavailable as e:
+        return jsonify({"success": False, "error": str(e)}), 503
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
