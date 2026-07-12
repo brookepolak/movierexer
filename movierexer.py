@@ -20,11 +20,14 @@ if not api_key:
 
 client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
 
-# Preference parsing is the only LLM call left at request time. Fall through
-# the chain when a model's daily rate limit is exhausted.
+# Preference parsing is the only LLM call left at request time. Scout leads
+# because its quota is reserved for the site — build_db.py's extraction
+# chains deliberately never use it, so it stays available even while the
+# offline pipeline drains every other model's daily limit. The rest are
+# best-effort fallbacks.
 PARSE_MODELS = [
-    "llama-3.3-70b-versatile",
     "meta-llama/llama-4-scout-17b-16e-instruct",
+    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
 ]
 

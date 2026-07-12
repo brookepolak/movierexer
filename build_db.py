@@ -350,16 +350,35 @@ def cmd_update():
 
 # Model chains: first is preferred; later ones are fallbacks with separate
 # Groq rate-limit quotas, used when the current model's daily cap is reached.
+# Every JSON-capable text model on the account is chained (each validated on
+# a real extraction), roughly best-first — combined they give ~6-7x the daily
+# throughput of a single model's RPD cap.
+# NOTE: meta-llama/llama-4-scout-17b-16e-instruct is deliberately absent from
+# both chains — its quota is reserved for the live site's preference parsing
+# (movierexer.py), which shares this Groq account. Never add it here.
 EXTRACT_MODELS = [                          # comment extraction (the real work)
     "llama-3.3-70b-versatile",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
     "openai/gpt-oss-120b",
+    "qwen/qwen3-32b",
+    "qwen/qwen3.6-27b",
+    "openai/gpt-oss-20b",
+    "llama-3.1-8b-instant",   # last resort: noisier, but the literal-text
+                              # guard strips its hallucinated sources
 ]
 SCREEN_MODELS = [                           # cheap gate: does the post name a movie?
     "llama-3.1-8b-instant",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
     "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
+    "qwen/qwen3-32b",
 ]
+
+# Reasoning models spend tokens thinking before the JSON unless told not to.
+MODEL_EXTRA = {
+    "openai/gpt-oss-120b":  {"reasoning_effort": "low"},
+    "openai/gpt-oss-20b":   {"reasoning_effort": "low"},
+    "qwen/qwen3-32b":       {"reasoning_effort": "none"},
+    "qwen/qwen3.6-27b":     {"reasoning_effort": "none"},
+}
 EXTRACT_SLEEP = 2.0   # seconds between Groq calls (free tier is ~30 req/min)
 COMMENTS_PER_POST = 8
 SCREEN_BATCH  = 25    # posts classified per screening call — skipped posts
@@ -445,6 +464,7 @@ def _screen_posts(client, batch, model=SCREEN_MODELS[0]):
         response_format={"type": "json_object"},
         # generous headroom: fallback models may spend tokens on reasoning
         max_tokens=96 * len(batch) + 256,
+        extra_body=MODEL_EXTRA.get(model) or None,
     )
     data = json.loads(response.choices[0].message.content)
     out = {}
@@ -485,6 +505,7 @@ def _extract_post(client, title, selftext, comments, model=EXTRACT_MODELS[0]):
         response_format={"type": "json_object"},
         # generous headroom: fallback models may spend tokens on reasoning
         max_tokens=1024,
+        extra_body=MODEL_EXTRA.get(model) or None,
     )
     data = json.loads(response.choices[0].message.content)
     # Same literal-mention guard as screening: a claimed source must appear
